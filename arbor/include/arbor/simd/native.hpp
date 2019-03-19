@@ -65,7 +65,13 @@ ARB_DEF_NATIVE_SIMD_(double, 8, avx512)
 
 #endif
 
-#if defined(__ARM_NEON__) || defined(__aarch64__)
+#if defined(__ARM_FEATURE_SVE)
+
+#include <arbor/simd/sve.hpp>
+ARB_DEF_NATIVE_SIMD_(int, 4, sve)
+ARB_DEF_NATIVE_SIMD_(double, 4, sve)
+
+#elif defined(__ARM_NEON__) || defined(__aarch64__)
 
 #include <arbor/simd/neon.hpp>
 ARB_DEF_NATIVE_SIMD_(int, 2, neon)
