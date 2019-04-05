@@ -8,6 +8,7 @@
 #include <arbor/simd/simd.hpp>
 #include <arbor/simd/avx.hpp>
 #include <arbor/simd/neon.hpp>
+#include <arbor/simd/sve.hpp>
 #include <arbor/util/compat.hpp>
 
 #include "common.hpp"
@@ -581,7 +582,10 @@ typedef ::testing::Types<
     simd<int, 8, simd_abi::avx512>,
     simd<double, 8, simd_abi::avx512>,
 #endif
-#if defined(__ARM_NEON__) || defined(__aarch64__)
+#if defined(__ARM_FEATURE_SVE)
+    simd<int, SVE_LENGTH, simd_abi::sve>,
+    simd<double, SVE_LENGTH, simd_abi::sve>,
+#elif defined(__ARM_NEON__) || defined(__aarch64__)
     simd<int, 2, simd_abi::neon>,
     simd<double, 2, simd_abi::neon>,
 #endif
@@ -867,7 +871,9 @@ typedef ::testing::Types<
 #ifdef __AVX512F__
     simd<double, 8, simd_abi::avx512>,
 #endif
-#if defined(__ARM_NEON__) || defined(__aarch64__)
+#if defined(__ARM_FEATURE_SVE)
+    simd<double, SVE_LENGTH, simd_abi::sve>,
+#elif defined(__ARM_NEON__) || defined(__aarch64__)
     simd<double, 2, simd_abi::neon>,
 #endif
 
@@ -1186,7 +1192,13 @@ typedef ::testing::Types<
     simd_and_index<simd<int, 8, simd_abi::avx512>,
                    simd<int, 8, simd_abi::avx512>>,
 #endif
-#if defined(__ARM_NEON__) || defined(__aarch64__)
+#if defined(__ARM_FEATURE_SVE)
+    simd_and_index<simd<double, SVE_LENGTH, simd_abi::sve>,
+                   simd<int, SVE_LENGTH, simd_abi::sve>>,
+
+    simd_and_index<simd<int, SVE_LENGTH, simd_abi::sve>,
+                   simd<int, SVE_LENGTH, simd_abi::sve>>,
+#elif defined(__ARM_NEON__) || defined(__aarch64__)
     simd_and_index<simd<double, 2, simd_abi::neon>,
                    simd<int, 2, simd_abi::neon>>,
 
@@ -1272,7 +1284,10 @@ typedef ::testing::Types<
     simd_pair<simd<double, 8, simd_abi::avx512>,
               simd<int, 8, simd_abi::avx512>>,
 #endif
-#if defined(__ARM_NEON__) || defined(__aarch64__)
+#if defined(__ARM_FEATURE_SVE)
+    simd_pair<simd<double, SVE_LENGTH, simd_abi::sve>,
+              simd<int, SVE_LENGTH, simd_abi::sve>>,
+#elif defined(__ARM_NEON__) || defined(__aarch64__)
     simd_pair<simd<double, 2, simd_abi::neon>,
               simd<int, 2, simd_abi::neon>>,
 #endif

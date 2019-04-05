@@ -39,6 +39,10 @@ set(ARB_VALIDATION_DATA_DIR "${PROJECT_SOURCE_DIR}/validation/data" CACHE PATH
 
 option(ARB_USE_POSIX_GLOB "wrap POSIX glob(3) for glob functionality" ON)
 
+# Sve length
+set(SVE_VECTOR_LENGTH "4" CACHE STRING "vector length for arm sve, default 256 bits")
+add_definitions( -DSVE_LENGTH=${SVE_VECTOR_LENGTH} )
+
 #----------------------------------------------------------
 # Configure-time features for Arbor:
 #----------------------------------------------------------
