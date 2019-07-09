@@ -27,6 +27,7 @@
 #include "util/rangeutil.hpp"
 
 #include "common.hpp"
+#include "unit_test_catalogue.hpp"
 #include "../common_cells.hpp"
 #include "../simple_recipes.hpp"
 
@@ -54,11 +55,16 @@ arb::mechanism* find_mechanism(fvm_cell& fvcell, const std::string& name) {
     return nullptr;
 }
 
+arb::mechanism* find_mechanism(fvm_cell& fvcell, int index) {
+    auto& mechs = fvcell.*private_mechanisms_ptr;
+    return index<(int)mechs.size()? mechs[index].get(): nullptr;
+}
+
 // Access to mechanism-internal data:
 
 using mechanism_global_table = std::vector<std::pair<const char*, arb::fvm_value_type*>>;
 using mechanism_field_table = std::vector<std::pair<const char*, arb::fvm_value_type**>>;
-using mechanism_ion_index_table = std::vector<std::pair<arb::ionKind, backend::iarray*>>;
+using mechanism_ion_index_table = std::vector<std::pair<const char*, backend::iarray*>>;
 
 ACCESS_BIND(\
     mechanism_global_table (arb::multicore::mechanism::*)(),\
@@ -263,34 +269,42 @@ TEST(fvm_lowered, target_handles) {
     std::vector<fvm_index_type> cell_to_intdom;
     probe_association_map<probe_handle> probe_map;
 
-    fvm_cell fvcell(context);
-    fvcell.initialize({0, 1}, cable1d_recipe(cells), cell_to_intdom, targets, probe_map);
+    auto test_target_handles = [&](fvm_cell& cell) {
+        mechanism *expsyn = find_mechanism(cell, "expsyn");
+        ASSERT_TRUE(expsyn);
+        mechanism *exp2syn = find_mechanism(cell, "exp2syn");
+        ASSERT_TRUE(exp2syn);
 
-    mechanism* expsyn = find_mechanism(fvcell, "expsyn");
-    ASSERT_TRUE(expsyn);
-    mechanism* exp2syn = find_mechanism(fvcell, "exp2syn");
-    ASSERT_TRUE(exp2syn);
+        unsigned expsyn_id = expsyn->mechanism_id();
+        unsigned exp2syn_id = exp2syn->mechanism_id();
 
-    unsigned expsyn_id = expsyn->mechanism_id();
-    unsigned exp2syn_id = exp2syn->mechanism_id();
+        EXPECT_EQ(4u, targets.size());
 
-    EXPECT_EQ(4u, targets.size());
+        EXPECT_EQ(expsyn_id, targets[0].mech_id);
+        EXPECT_EQ(1u, targets[0].mech_index);
+        EXPECT_EQ(0u, targets[0].intdom_index);
 
-    EXPECT_EQ(expsyn_id, targets[0].mech_id);
-    EXPECT_EQ(1u, targets[0].mech_index);
-    EXPECT_EQ(0u, targets[0].intdom_index);
+        EXPECT_EQ(expsyn_id, targets[1].mech_id);
+        EXPECT_EQ(0u, targets[1].mech_index);
+        EXPECT_EQ(0u, targets[1].intdom_index);
 
-    EXPECT_EQ(expsyn_id, targets[1].mech_id);
-    EXPECT_EQ(0u, targets[1].mech_index);
-    EXPECT_EQ(0u, targets[1].intdom_index);
+        EXPECT_EQ(exp2syn_id, targets[2].mech_id);
+        EXPECT_EQ(0u, targets[2].mech_index);
+        EXPECT_EQ(1u, targets[2].intdom_index);
 
-    EXPECT_EQ(exp2syn_id, targets[2].mech_id);
-    EXPECT_EQ(0u, targets[2].mech_index);
-    EXPECT_EQ(1u, targets[2].intdom_index);
+        EXPECT_EQ(expsyn_id, targets[3].mech_id);
+        EXPECT_EQ(2u, targets[3].mech_index);
+        EXPECT_EQ(1u, targets[3].intdom_index);
+    };
 
-    EXPECT_EQ(expsyn_id, targets[3].mech_id);
-    EXPECT_EQ(2u, targets[3].mech_index);
-    EXPECT_EQ(1u, targets[3].intdom_index);
+    fvm_cell fvcell0(context);
+    fvcell0.initialize({0, 1}, cable1d_recipe(cells, true), cell_to_intdom, targets, probe_map);
+    test_target_handles(fvcell0);
+
+    fvm_cell fvcell1(context);
+    fvcell1.initialize({0, 1}, cable1d_recipe(cells, false), cell_to_intdom, targets, probe_map);
+    test_target_handles(fvcell1);
+
 }
 
 TEST(fvm_lowered, stimulus) {
@@ -478,6 +492,155 @@ TEST(fvm_lowered, derived_mechs) {
     }
 }
 
+// Test that ion charge is propagated into mechanism variable.
+
+TEST(fvm_lowered, read_valence) {
+    execution_context context;
+
+    std::vector<target_handle> targets;
+    std::vector<fvm_index_type> cell_to_intdom;
+    probe_association_map<probe_handle> probe_map;
+
+    {
+        std::vector<cable_cell> cells(1);
+
+        cable_cell& c = cells[0];
+        auto soma = c.add_soma(6.0);
+        soma->add_mechanism("test_ca_read_valence");
+
+        cable1d_recipe rec(cells);
+        rec.catalogue() = make_unit_test_catalogue();
+
+        fvm_cell fvcell(context);
+        fvcell.initialize({0}, rec, cell_to_intdom, targets, probe_map);
+
+        // test_ca_read_valence initialization should write ca ion valence
+        // to state variable 'record_zca':
+
+        auto mech_ptr = dynamic_cast<multicore::mechanism*>(find_mechanism(fvcell, "test_ca_read_valence"));
+        auto opt_record_z_ptr = util::value_by_key((mech_ptr->*private_field_table_ptr)(), "record_z"s);
+
+        ASSERT_TRUE(opt_record_z_ptr);
+        auto& record_z = *opt_record_z_ptr.value();
+        ASSERT_EQ(2.0, record_z[0]);
+    }
+
+    {
+        // Check ion renaming.
+        std::vector<cable_cell> cells(1);
+
+        cable_cell& c = cells[0];
+        auto soma = c.add_soma(6.0);
+        soma->add_mechanism("cr_read_valence");
+
+        cable1d_recipe rec(cells);
+        rec.catalogue() = make_unit_test_catalogue();
+
+        rec.catalogue().derive("na_read_valence", "test_ca_read_valence", {}, {{"ca", "na"}});
+        rec.catalogue().derive("cr_read_valence", "na_read_valence", {}, {{"na", "cr"}});
+        rec.add_ion("cr", 7, 0, 0);
+
+        fvm_cell fvcell(context);
+        fvcell.initialize({0}, rec, cell_to_intdom, targets, probe_map);
+
+        auto cr_mech_ptr = dynamic_cast<multicore::mechanism*>(find_mechanism(fvcell, 0));
+        auto cr_opt_record_z_ptr = util::value_by_key((cr_mech_ptr->*private_field_table_ptr)(), "record_z"s);
+
+        ASSERT_TRUE(cr_opt_record_z_ptr);
+        auto& cr_record_z = *cr_opt_record_z_ptr.value();
+        ASSERT_EQ(7.0, cr_record_z[0]);
+    }
+}
+
+// Test correct scaling of ionic currents in reading and writing
+
+TEST(fvm_lowered, ionic_currents) {
+    cable_cell c;
+    auto soma = c.add_soma(6.0);
+
+    // Mechanism parameter is in NMODL units, i.e. mA/cm².
+
+    const double jca = 1.5;
+    soma->add_mechanism(mechanism_desc("fixed_ica_current").set("ica_density", jca));
+
+    // Mechanism models a well-mixed fixed-depth volume without replenishment,
+    // giving a linear response to ica over time.
+    //
+    //     cai' = - coeff · ica
+    //
+    // with NMODL units: cai' [mM/ms]; ica [mA/cm²], giving coeff in [mol/cm/C].
+
+    const double coeff = 0.5;
+    soma->add_mechanism(mechanism_desc("linear_ca_conc").set("coeff", coeff));
+
+    cable1d_recipe rec(c);
+    rec.catalogue() = make_unit_test_catalogue();
+
+    execution_context context;
+
+    std::vector<target_handle> targets;
+    std::vector<fvm_index_type> cell_to_intdom;
+    probe_association_map<probe_handle> probe_map;
+
+    fvm_cell fvcell(context);
+    fvcell.initialize({0}, rec, cell_to_intdom, targets, probe_map);
+
+    auto& state = *(fvcell.*private_state_ptr).get();
+    auto& ion = state.ion_data.at("ca"s);
+
+    // Ionic current should be 15 A/m², and initial concentration zero.
+    EXPECT_EQ(15, ion.iX_[0]);
+    EXPECT_EQ(0, ion.Xi_[0]);
+
+    // Integration should be (effectively) exact, so check for linear response.
+    const double time = 12; // [ms]
+    (void)fvcell.integrate(time, 0.1, {}, {});
+    double expected_Xi = -time*coeff*jca;
+    EXPECT_NEAR(expected_Xi, ion.Xi_[0], 1e-6);
+}
+
+// Test correct scaling of an ionic current updated via a point mechanism
+
+TEST(fvm_lowered, point_ionic_current) {
+    cable_cell c;
+
+    double r = 6.0; // [µm]
+    c.add_soma(6.0);
+
+    double soma_area_m2 = 4*math::pi<double>*r*r*1e-12; // [m²]
+
+    // Event weight is translated by point_ica_current into a current contribution in nA.
+    c.add_synapse({0u, 0.5}, "point_ica_current");
+
+    cable1d_recipe rec(c);
+    rec.catalogue() = make_unit_test_catalogue();
+
+    execution_context context;
+
+    std::vector<target_handle> targets;
+    std::vector<fvm_index_type> cell_to_intdom;
+    probe_association_map<probe_handle> probe_map;
+
+    fvm_cell fvcell(context);
+    fvcell.initialize({0}, rec, cell_to_intdom, targets, probe_map);
+
+    // Only one target, corresponding to our point process on soma.
+    double ica_nA = 12.3;
+    deliverable_event ev = {0.04, target_handle{0, 0, 0}, (float)ica_nA};
+
+    auto& state = *(fvcell.*private_state_ptr).get();
+    auto& ion = state.ion_data.at("ca"s);
+
+    // Ionic current should be 0 A/m² after initialization.
+    EXPECT_EQ(0, ion.iX_[0]);
+
+    // Ionic current should be ica_nA/soma_area after integrating past event time.
+    const double time = 0.5; // [ms]
+    (void)fvcell.integrate(time, 0.01, {ev}, {});
+
+    double expected_iX = ica_nA*1e-9/soma_area_m2;
+    EXPECT_FLOAT_EQ(expected_iX, ion.iX_[0]);
+}
 
 // Test area-weighted linear combination of ion species concentrations
 
@@ -534,7 +697,7 @@ TEST(fvm_lowered, weighted_write_ion) {
     fvcell.initialize({0}, cable1d_recipe(c), cell_to_intdom, targets, probe_map);
 
     auto& state = *(fvcell.*private_state_ptr).get();
-    auto& ion = state.ion_data.at(ionKind::ca);
+    auto& ion = state.ion_data.at("ca"s);
     ion.default_int_concentration = con_int;
     ion.default_ext_concentration = con_ext;
     ion.init_concentration();
@@ -553,7 +716,7 @@ TEST(fvm_lowered, weighted_write_ion) {
     ASSERT_TRUE(opt_cai_ptr);
     auto& test_ca_cai = *opt_cai_ptr.value();
 
-    auto opt_ca_index_ptr = util::value_by_key((test_ca->*private_ion_index_table_ptr)(), ionKind::ca);
+    auto opt_ca_index_ptr = util::value_by_key((test_ca->*private_ion_index_table_ptr)(), "ca"s);
     ASSERT_TRUE(opt_ca_index_ptr);
     auto& test_ca_ca_index = *opt_ca_index_ptr.value();
 

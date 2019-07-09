@@ -62,6 +62,7 @@ private:
     std::vector<Token> comma_separated_identifiers();
     std::vector<Token> unit_description();
     std::string value_literal();
+    int value_signed_integer();
     std::pair<Token, Token> range_description();
 
     /// build the identifier list
@@ -75,6 +76,7 @@ private:
     Parser();
     Parser(Parser const &);
 
+    void parse_unit();
     bool expect(tok, const char *str="");
     bool expect(tok, std::string const& str);
 };

@@ -18,7 +18,6 @@
 
 #include <arbor/assert.hpp>
 #include <arbor/common_types.hpp>
-#include <arbor/ion.hpp>
 #include <arbor/recipe.hpp>
 
 #include "builtin_mechanisms.hpp"
@@ -237,7 +236,7 @@ fvm_integration_result fvm_lowered_cell_impl<Backend>::integrate(
         // Integrate voltage by matrix solve.
 
         PE(advance_integrate_matrix_build);
-        matrix_.assemble(state_->dt_intdom, state_->voltage, state_->current_density);
+        matrix_.assemble(state_->dt_intdom, state_->voltage, state_->current_density, state_->conductivity);
         PL();
         PE(advance_integrate_matrix_solve);
         matrix_.solve();
@@ -386,7 +385,7 @@ void fvm_lowered_cell_impl<B>::initialize(
 
     // Discretize mechanism data.
 
-    fvm_mechanism_data mech_data = fvm_build_mechanism_data(*catalogue, cells, D, global_props.coalesce_synapses);
+    fvm_mechanism_data mech_data = fvm_build_mechanism_data(global_props,  cells, D);
 
     // Discritize and build gap junction info
 
@@ -397,17 +396,20 @@ void fvm_lowered_cell_impl<B>::initialize(
 
     unsigned data_alignment = util::max_value(
         util::transform_view(keys(mech_data.mechanisms),
-            [&](const std::string& name) { return mech_instance(name)->data_alignment(); }));
+            [&](const std::string& name) { return mech_instance(name).mech->data_alignment(); }));
 
     state_ = std::make_unique<shared_state>(num_intdoms, cv_to_intdom, gj_vector, data_alignment? data_alignment: 1u);
 
     // Instantiate mechanisms and ions.
 
     for (auto& i: mech_data.ions) {
-        ionKind kind = i.first;
+        const std::string& ion_name = i.first;
 
-        if (auto ion = value_by_key(global_props.ion_default, to_string(kind))) {
-            state_->add_ion(ion.value(), i.second.cv, i.second.iconc_norm_area, i.second.econc_norm_area);
+        if (auto ion = value_by_key(global_props.ion_default, ion_name)) {
+            state_->add_ion(ion_name, ion.value(), i.second.cv, i.second.iconc_norm_area, i.second.econc_norm_area);
+        }
+        else {
+            throw cable_cell_error("unrecognized ion '"+ion_name+"' in mechanism");
         }
     }
 
@@ -418,7 +420,7 @@ void fvm_lowered_cell_impl<B>::initialize(
         auto& config = m.second;
         unsigned mech_id = mechanisms_.size();
 
-        mechanism::layout layout;
+        mechanism_layout layout;
         layout.cv = config.cv;
         layout.multiplicity = config.multiplicity;
         layout.weight.resize(layout.cv.size());
@@ -441,28 +443,31 @@ void fvm_lowered_cell_impl<B>::initialize(
                 // (builtin stimulus, for example, has no targets)
 
                 if (!config.target.empty()) {
-                    for (auto j: make_span(multiplicity_part[i])) {
-                        target_handles[config.target[j]] = target_handle(mech_id, i, cv_to_intdom[cv]);
-                    }
+                    if(!config.multiplicity.empty()) {
+                        for (auto j: make_span(multiplicity_part[i])) {
+                            target_handles[config.target[j]] = target_handle(mech_id, i, cv_to_intdom[cv]);
+                        }
+                    } else {
+                        target_handles[config.target[i]] = target_handle(mech_id, i, cv_to_intdom[cv]);
+                    };
                 }
             }
         }
         else {
-            // Density Current density contributions from mechanism are in [mA/cm²]
-            // (NEURON compatibility). F = [mA/cm²] / [A/m²] = 10.
+            // Current density contributions from mechanism are already in [A/m²].
 
             for (auto i: count_along(layout.cv)) {
-                layout.weight[i] = 10*config.norm_area[i];
+                layout.weight[i] = config.norm_area[i];
             }
         }
 
-        auto mech = mech_instance(name);
-        mech->instantiate(mech_id, *state_, layout);
+        auto minst = mech_instance(name);
+        minst.mech->instantiate(mech_id, *state_, minst.overrides, layout);
 
         for (auto& pv: config.param_values) {
-            mech->set_parameter(pv.first, pv.second);
+            minst.mech->set_parameter(pv.first, pv.second);
         }
-        mechanisms_.push_back(mechanism_ptr(mech.release()));
+        mechanisms_.push_back(mechanism_ptr(minst.mech.release()));
     }
 
     // Collect detectors, probe handles.

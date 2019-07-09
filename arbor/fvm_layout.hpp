@@ -133,13 +133,13 @@ struct fvm_mechanism_data {
     // Mechanism config, indexed by mechanism name.
     std::unordered_map<std::string, fvm_mechanism_config> mechanisms;
 
-    // Ion config, indexed by ionKind.
-    std::unordered_map<ionKind, fvm_ion_config> ions;
+    // Ion config, indexed by ion name.
+    std::unordered_map<std::string, fvm_ion_config> ions;
 
     // Total number of targets (point-mechanism points)
     std::size_t ntarget = 0;
 };
 
-fvm_mechanism_data fvm_build_mechanism_data(const mechanism_catalogue& catalogue, const std::vector<cable_cell>& cells, const fvm_discretization& D, bool coalesce = true);
+fvm_mechanism_data fvm_build_mechanism_data(const cable_cell_global_properties& gprop, const std::vector<cable_cell>& cells, const fvm_discretization& D);
 
 } // namespace arb

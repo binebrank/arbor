@@ -1,11 +1,11 @@
-#include <arbor/version.hpp>
-
-#include <sstream>
 #include <iomanip>
 #include <ios>
+#include <sstream>
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+
+#include <arbor/version.hpp>
 
 namespace pyarb {
 

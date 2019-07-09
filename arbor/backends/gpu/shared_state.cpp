@@ -3,7 +3,7 @@
 
 #include <arbor/constants.hpp>
 #include <arbor/fvm_types.hpp>
-#include <arbor/ion.hpp>
+#include <arbor/ion_info.hpp>
 
 #include "backends/event.hpp"
 #include "backends/gpu/gpu_store_types.hpp"
@@ -25,7 +25,7 @@ void init_concentration_impl(
 
 void nernst_impl(
     std::size_t n, fvm_value_type factor,
-    const fvm_value_type* Xi, const fvm_value_type* Xo, fvm_value_type* eX);
+    const fvm_value_type* charge, const fvm_value_type* Xi, const fvm_value_type* Xo, fvm_value_type* eX);
 
 void update_time_to_impl(
     std::size_t n, fvm_value_type* time_to, const fvm_value_type* time,
@@ -68,7 +68,7 @@ ion_state::ion_state(
     Xo_(cv.size(), NAN),
     weight_Xi_(make_const_view(iconc_norm_area)),
     weight_Xo_(make_const_view(econc_norm_area)),
-    charge(info.charge),
+    charge(1u, info.charge),
     default_int_concentration(info.default_int_concentration),
     default_ext_concentration(info.default_ext_concentration)
 {
@@ -91,8 +91,8 @@ void ion_state::nernst(fvm_value_type temperature_K) {
     // 1e3 factor required to scale from V -> mV.
     constexpr fvm_value_type RF = 1e3*constant::gas_constant/constant::faraday;
 
-    fvm_value_type factor = RF*temperature_K/charge;
-    nernst_impl(Xi_.size(), factor, Xo_.data(), Xi_.data(), eX_.data());
+    fvm_value_type factor = RF*temperature_K;
+    nernst_impl(Xi_.size(), factor, charge.data(), Xo_.data(), Xi_.data(), eX_.data());
 }
 
 void ion_state::init_concentration() {
@@ -126,24 +126,27 @@ shared_state::shared_state(
     dt_cv(n_cv),
     voltage(n_cv),
     current_density(n_cv),
+    conductivity(n_cv),
     temperature_degC(1),
     deliverable_events(n_intdom)
 {}
 
 void shared_state::add_ion(
+    const std::string& ion_name,
     ion_info info,
     const std::vector<fvm_index_type>& cv,
     const std::vector<fvm_value_type>& iconc_norm_area,
     const std::vector<fvm_value_type>& econc_norm_area)
 {
     ion_data.emplace(std::piecewise_construct,
-        std::forward_as_tuple(info.kind),
+        std::forward_as_tuple(ion_name),
         std::forward_as_tuple(info, cv, iconc_norm_area, econc_norm_area, 1u));
 }
 
 void shared_state::reset(fvm_value_type initial_voltage, fvm_value_type temperature_K) {
     memory::fill(voltage, initial_voltage);
     memory::fill(current_density, 0);
+    memory::fill(conductivity, 0);
     memory::fill(time, 0);
     memory::fill(time_to, 0);
     memory::fill(temperature_degC, temperature_K - 273.15);
@@ -155,6 +158,7 @@ void shared_state::reset(fvm_value_type initial_voltage, fvm_value_type temperat
 
 void shared_state::zero_currents() {
     memory::fill(current_density, 0);
+    memory::fill(conductivity, 0);
     for (auto& i: ion_data) {
         i.second.zero_current();
     }
@@ -205,8 +209,9 @@ std::ostream& operator<<(std::ostream& o, shared_state& s) {
     o << " dt_cv      " << s.dt_cv << "\n";
     o << " voltage    " << s.voltage << "\n";
     o << " current    " << s.current_density << "\n";
+    o << " conductivity " << s.conductivity << "\n";
     for (auto& ki: s.ion_data) {
-        auto kn = to_string(ki.first);
+        auto& kn = ki.first;
         auto& i = const_cast<ion_state&>(ki.second);
         o << " " << kn << ".current_density        " << i.iX_ << "\n";
         o << " " << kn << ".reversal_potential     " << i.eX_ << "\n";

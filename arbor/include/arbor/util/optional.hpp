@@ -107,6 +107,7 @@ namespace detail {
         using const_rvalue_reference = typename data_type::const_rvalue_reference;
 
     public:
+        using value_type = X;
         using reference = typename data_type::reference;
         using const_reference = typename data_type::const_reference;
         using pointer = typename data_type::pointer;
@@ -164,6 +165,15 @@ namespace detail {
                 data.destruct();
             }
             set = false;
+        }
+
+        template <typename Y>
+        void emplace(Y&& y) {
+            if (set) {
+                data.destruct();
+            }
+            data.construct(std::forward<Y>(y));
+            set = true;
         }
     };
 
@@ -344,14 +354,17 @@ struct optional<X&>: detail::optional_base<X&> {
         return assert_set(), ref();
     }
 
-    template <typename T>
-    X& value_or(T& alternative) {
-        return set? ref(): static_cast<X&>(alternative);
+    X& value_or(X& alternative) & {
+        return set? ref(): alternative;
+    }
+
+    const X& value_or(const X& alternative) const& {
+        return set? ref(): alternative;
     }
 
     template <typename T>
-    const X& value_or(const T& alternative) const {
-        return set? ref(): static_cast<const X&>(alternative);
+    const X value_or(const T& alternative) && {
+        return set? ref(): static_cast<X>(alternative);
     }
 };
 
