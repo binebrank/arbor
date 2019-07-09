@@ -1,5 +1,6 @@
 #pragma once
 
+// Author: Bine Brank, JSC
 // SVE SIMD intrinsics implementation.
 
 #if defined(__ARM_FEATURE_SVE)
@@ -153,6 +154,13 @@ struct sve_int : implbase<sve_int> {
 	svst1(half, res.data(),  vec);
         return res;
     }
+
+    static int32_t reduce_add(const array& a) {
+	svbool_t half = svwhilelt_b32(0, SVE_LENGTH);
+	svint32_t veca = svld1(half, a.data());
+	return svaddv(half, veca);
+    }
+
     // Mathematical functions
     static array abs(const array& a) {
 	svbool_t half = svwhilelt_b32(0, SVE_LENGTH);
