@@ -40,7 +40,13 @@ set(ARB_VALIDATION_DATA_DIR "${PROJECT_SOURCE_DIR}/validation/data" CACHE PATH
 option(ARB_USE_POSIX_GLOB "wrap POSIX glob(3) for glob functionality" ON)
 
 # Sve length
-set(SVE_VECTOR_LENGTH "4" CACHE STRING "vector length for arm sve, default 256 bits")
+set(SVE_VECTOR_LENGTH "256" CACHE STRING "vector length for arm sve, default 256 bits")
+set(SVE_POSSIBLE_VALUES "128" "256" "512" "1024" "2048")
+if(NOT SVE_VECTOR_LENGTH IN_LIST SVE_POSSIBLE_VALUES)
+    string (REPLACE ";" " " SVE_POSSIBLE_VALUES "${SVE_POSSIBLE_VALUES}")
+    message(FATAL_ERROR "Error: -DSVE_VECTOR_LENGTH must be one of ${SVE_POSSIBLE_VALUES}.")
+endif()
+math(EXPR SVE_VECTOR_LENGTH "${SVE_VECTOR_LENGTH} / 64")
 add_definitions( -DSVE_LENGTH=${SVE_VECTOR_LENGTH} )
 
 #----------------------------------------------------------

@@ -153,6 +153,23 @@ void mechanism::instantiate(unsigned id, backend::shared_state& shared, const me
     copy_extend(pos_data.cv, node_index_, pos_data.cv.back());
     copy_extend(pos_data.weight, make_range(data_.data(), data_.data()+width_padded_), 0);
     index_constraints_ = make_constraint_partition(node_index_, width_, simd_width);
+#if defined(__ARM_FEATURE_SVE)
+   // check if arm sve runtime length is the same as compile time length.. can someone tell me where else can I put this? needs to be at run-time
+   uint64_t byte_size = 0;
+   __asm__ volatile(
+   " mov  %[byte_size],#0   \n\t"
+   " incb %[byte_size]      \n\t"
+   : [byte_size] "=r" (byte_size)
+   :
+   :
+   );
+   if (byte_size * 8 != SVE_LENGTH*64)
+   {
+       std::cerr << "Error: Runtime vector size: " << byte_size*8 << " does not equal compile-time vector size: " << SVE_LENGTH*64 << "." << std::endl;
+       exit(EXIT_FAILURE);
+   }
+
+#endif
 
     if (mult_in_place_) {
         multiplicity_ = iarray(width_padded_, pad);
