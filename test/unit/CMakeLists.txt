@@ -1,12 +1,35 @@
 # Build mechanisms used solely in unit tests.
 
 set(test_mechanisms
+    ca_linear
     celsius_test
+    diam_test
+    param_as_state
+    test_linear_state
+    test_linear_init
+    test_linear_init_shuffle
+    test0_kin_diff
+    test0_kin_conserve
+    test0_kin_compartment
+    test0_kin_steadystate
+    test1_kin_diff
+    test1_kin_conserve
+    test1_kin_compartment
+    test2_kin_diff
+    test3_kin_diff
+    test4_kin_compartment
+    test1_kin_steadystate
     fixed_ica_current
     point_ica_current
     linear_ca_conc
     test_cl_valence
     test_ca_read_valence
+    read_eX
+    write_Xi_Xo
+    write_multiple_eX
+    write_eX
+    read_cai_init
+    write_cai_breakpoint
 )
 
 include(${PROJECT_SOURCE_DIR}/mechanisms/BuildModules.cmake)
@@ -30,12 +53,11 @@ build_modules(
 set(test_mech_sources)
 foreach(mech ${test_mechanisms})
     list(APPEND test_mech_sources ${test_mech_dir}/${mech}_cpu.cpp)
-    if(ARB_WITH_CUDA)
+    if(ARB_WITH_GPU)
         list(APPEND test_mech_sources ${test_mech_dir}/${mech}_gpu.cpp)
         list(APPEND test_mech_sources ${test_mech_dir}/${mech}_gpu.cu)
     endif()
 endforeach()
-
 
 # TODO: test_mechanism and mechanism prototype comparisons must
 # be re-jigged.
@@ -59,13 +81,16 @@ endforeach()
 set(unit_sources
     test_algorithms.cpp
     test_any.cpp
+    test_any_visitor.cpp
     test_backend.cpp
-    test_double_buffer.cpp
-    test_dry_run_context.cpp
-    test_compartments.cpp
     test_counter.cpp
+    test_cv_geom.cpp
+    test_cv_layout.cpp
+    test_cv_policy.cpp
     test_cycle.cpp
     test_domain_decomposition.cpp
+    test_dry_run_context.cpp
+    test_double_buffer.cpp
     test_either.cpp
     test_event_binner.cpp
     test_event_delivery.cpp
@@ -75,32 +100,40 @@ set(unit_sources
     test_fvm_layout.cpp
     test_fvm_lowered.cpp
     test_glob_basic.cpp
-    test_mc_cell_group.cpp
+    test_kinetic_linear.cpp
     test_lexcmp.cpp
     test_lif_cell_group.cpp
+    test_local_context.cpp
     test_maputil.cpp
     test_mask_stream.cpp
     test_math.cpp
     test_matrix.cpp
-    test_cable_cell.cpp
+    test_mcable_map.cpp
+    test_mc_cell_group.cpp
     test_mechanisms.cpp
-    test_mech_temperature.cpp
+    test_mech_temp_diam.cpp
     test_mechcat.cpp
+    test_mechinfo.cpp
     test_merge_events.cpp
+    test_merge_view.cpp
+    test_morphology.cpp
+    test_morph_embedding.cpp
+    test_morph_expr.cpp
+    test_morph_primitives.cpp
     test_multi_event_stream.cpp
     test_optional.cpp
-    test_mechinfo.cpp
     test_padded.cpp
     test_partition.cpp
     test_partition_by_constraint.cpp
     test_path.cpp
+    test_piecewise.cpp
     test_point.cpp
+    test_pp_util.cpp
     test_probe.cpp
     test_range.cpp
-    test_segment.cpp
+    test_ratelem.cpp
     test_schedule.cpp
     test_spike_source.cpp
-    test_local_context.cpp
     test_scope_exit.cpp
     test_simd.cpp
     test_span.cpp
@@ -115,7 +148,9 @@ set(unit_sources
     test_tree.cpp
     test_transform.cpp
     test_uninitialized.cpp
+    test_unique.cpp
     test_unique_any.cpp
+    test_variant.cpp
     test_vector.cpp
     test_version.cpp
 
@@ -128,7 +163,7 @@ set(unit_sources
     unit_test_catalogue.cpp
 )
 
-if(ARB_WITH_CUDA)
+if(ARB_WITH_GPU)
     list(APPEND unit_sources
 
         test_intrin.cu
@@ -145,11 +180,30 @@ if(ARB_WITH_CUDA)
     )
 endif()
 
+if(ARB_WITH_CUDA_CLANG OR ARB_WITH_HIP_CLANG)
+    set_source_files_properties(${unit_sources} PROPERTIES LANGUAGE CXX)
+    set_source_files_properties(${test_mech_sources} PROPERTIES LANGUAGE CXX)
+endif()
+
 add_executable(unit EXCLUDE_FROM_ALL ${unit_sources} ${test_mech_sources})
 add_dependencies(unit build_test_mods)
 add_dependencies(tests unit)
 
+if(ARB_WITH_NVCC)
+    target_compile_options(unit PRIVATE -DARB_CUDA)
+endif()
+
+if(ARB_WITH_CUDA_CLANG)
+    set(clang_options_ -DARB_CUDA -xcuda --cuda-gpu-arch=sm_60 --cuda-path=${CUDA_TOOLKIT_ROOT_DIR})
+    target_compile_options(unit PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${clang_options_}>)
+endif()
+
+if(ARB_WITH_HIP_CLANG)
+    set(clang_options_ -DARB_HIP -xhip --amdgpu-target=gfx906 --amdgpu-target=gfx900)
+    target_compile_options(unit PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${clang_options_}>)
+endif()
+
 target_compile_options(unit PRIVATE ${ARB_CXXOPT_ARCH})
 target_compile_definitions(unit PRIVATE "-DDATADIR=\"${CMAKE_CURRENT_SOURCE_DIR}/swc\"")
 target_include_directories(unit PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
-target_link_libraries(unit PRIVATE gtest arbor arbor-private-headers arbor-sup)
+target_link_libraries(unit PRIVATE gtest arbor arborenv arbor-private-headers arbor-sup)

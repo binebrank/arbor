@@ -6,8 +6,11 @@
 #include <arbor/domain_decomposition.hpp>
 #include <arbor/load_balance.hpp>
 
+#include <arborenv/gpu_env.hpp>
+
 #include "util/span.hpp"
 
+#include "../common_cells.hpp"
 #include "../simple_recipes.hpp"
 
 using namespace arb;
@@ -64,9 +67,8 @@ namespace {
         }
 
         arb::util::unique_any get_cell_description(cell_gid_type) const override {
-            cable_cell c;
-            c.add_soma(20);
-            c.add_gap_junction({0,1});
+            auto c = arb::make_cell_soma_only(false);
+            c.place(mlocation{0,1}, gap_junction_site{});
             return {std::move(c)};
         }
 
@@ -116,7 +118,7 @@ namespace {
 TEST(domain_decomposition, homogenous_population)
 {
     proc_allocation resources;
-    resources.num_threads = 1;
+    resources.gpu_id = arbenv::default_gpu();
 
     if (resources.has_gpu()) {
         // Test on a node with 1 gpu and 1 cpu core.
@@ -181,7 +183,7 @@ TEST(domain_decomposition, homogenous_population)
 TEST(domain_decomposition, heterogenous_population)
 {
     proc_allocation resources;
-    resources.num_threads = 1;
+    resources.gpu_id = arbenv::default_gpu();
 
     if (resources.has_gpu()) {
         // Test on a node with 1 gpu and 1 cpu core.

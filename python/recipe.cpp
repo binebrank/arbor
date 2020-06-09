@@ -8,10 +8,12 @@
 
 #include <arbor/cable_cell.hpp>
 #include <arbor/event_generator.hpp>
+#include <arbor/morph/primitives.hpp>
 #include <arbor/recipe.hpp>
 #include <arbor/spike_source_cell.hpp>
 
 #include "cells.hpp"
+#include "conversion.hpp"
 #include "error.hpp"
 #include "event_generator.hpp"
 #include "strprintf.hpp"
@@ -22,20 +24,28 @@ namespace pyarb {
 // The py::recipe::cell_decription returns a pybind11::object, that is
 // unwrapped and copied into a arb::util::unique_any.
 arb::util::unique_any py_recipe_shim::get_cell_description(arb::cell_gid_type gid) const {
-    pybind11::gil_scoped_acquire guard;
-    return convert_cell(impl_->cell_description(gid));
+    return try_catch_pyexception(
+                [&](){ return convert_cell(impl_->cell_description(gid)); },
+                "Python error already thrown");
 }
 
-std::vector<arb::event_generator> py_recipe_shim::event_generators(arb::cell_gid_type gid) const {
+arb::probe_info cable_probe(std::string kind, arb::cell_member_type id, arb::mlocation loc) {
+    if (kind == "voltage") {
+        return arb::probe_info{id, 0, arb::cable_probe_membrane_voltage{loc}};
+    }
+    else if (kind == "ionic current density") {
+        return arb::probe_info{id, 0, arb::cable_probe_total_ion_current_density{loc}};
+    }
+    else throw pyarb_error(util::pprintf("unrecognized probe kind: {}", kind));
+};
+
+std::vector<arb::event_generator> convert_gen(std::vector<pybind11::object> pygens, arb::cell_gid_type gid) {
     using namespace std::string_literals;
     using pybind11::isinstance;
     using pybind11::cast;
 
     // Aquire the GIL because it must be held when calling isinstance and cast.
     pybind11::gil_scoped_acquire guard;
-
-    // Get the python list of pyarb::event_generator_shim from the python front end.
-    auto pygens = impl_->event_generators(gid);
 
     std::vector<arb::event_generator> gens;
     gens.reserve(pygens.size());
@@ -57,7 +67,11 @@ std::vector<arb::event_generator> py_recipe_shim::event_generators(arb::cell_gid
     return gens;
 }
 
-// TODO: implement py_recipe_shim::probe_info
+std::vector<arb::event_generator> py_recipe_shim::event_generators(arb::cell_gid_type gid) const {
+    return try_catch_pyexception(
+                [&](){ return convert_gen(impl_->event_generators(gid), gid); },
+                "Python error already thrown");
+}
 
 std::string con_to_string(const arb::cell_connection& c) {
     return util::pprintf("<arbor.connection: source ({},{}), destination ({},{}), delay {}, weight {}>",
@@ -77,7 +91,7 @@ void register_recipe(pybind11::module& m) {
         "Describes a connection between two cells:\n"
         "  Defined by source and destination end points (that is pre-synaptic and post-synaptic respectively), a connection weight and a delay time.");
     cell_connection
-        .def(pybind11::init<arb::cell_member_type, arb::cell_member_type, float, arb::time_type>(),
+        .def(pybind11::init<arb::cell_member_type, arb::cell_member_type, float, float>(),
             "source"_a, "dest"_a, "weight"_a, "delay"_a,
             "Construct a connection with arguments:\n"
             "  source:      The source end point of the connection.\n"
@@ -135,7 +149,6 @@ void register_recipe(pybind11::module& m) {
         .def("num_targets", &py_recipe::num_targets,
             "gid"_a,
             "The number of post-synaptic sites on gid, 0 by default.")
-        // TODO: py_recipe::num_probes
         .def("num_gap_junction_sites", &py_recipe::num_gap_junction_sites,
             "gid"_a,
             "The number of gap junction sites on gid, 0 by default.")
@@ -148,9 +161,25 @@ void register_recipe(pybind11::module& m) {
         .def("gap_junctions_on", &py_recipe::gap_junctions_on,
             "gid"_a,
             "A list of the gap junctions connected to gid, [] by default.")
-        // TODO: py_recipe::get_probe
+        .def("num_probes", &py_recipe::num_probes,
+            "gid"_a,
+            "The number of probes on gid, 0 by default.")
+        .def("get_probe", &py_recipe::get_probe,
+            "id"_a,
+            "The probe(s) to allow monitoring, must be provided if num_probes() returns a non-zero value.")
         // TODO: py_recipe::global_properties
         .def("__str__",  [](const py_recipe&){return "<arbor.recipe>";})
         .def("__repr__", [](const py_recipe&){return "<arbor.recipe>";});
+
+    // Probes
+    m.def("cable_probe", &cable_probe,
+        "Description of a probe at a location on a cable cell with id available for monitoring data of kind "\
+        "where kind is one of 'voltage' or 'ionic current density'.",
+        "kind"_a, "id"_a, "location"_a);
+
+    pybind11::class_<arb::probe_info> probe(m, "probe");
+    probe
+        .def("__repr__", [](const arb::probe_info& p){return util::pprintf("<arbor.probe: cell {}, probe {}>", p.id.gid, p.id.index);})
+        .def("__str__",  [](const arb::probe_info& p){return util::pprintf("<arbor.probe: cell {}, probe {}>", p.id.gid, p.id.index);});
 }
 } // namespace pyarb

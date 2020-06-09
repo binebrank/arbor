@@ -6,9 +6,8 @@ import unittest
 import arbor as arb
 
 # check Arbor's configuration of mpi
-config = arb.config()
-mpi_enabled = config["mpi"]
-mpi4py_enabled = config["mpi4py"]
+mpi_enabled    = arb.__config__["mpi"]
+mpi4py_enabled = arb.__config__["mpi4py"]
 
 if (mpi_enabled and mpi4py_enabled):
     import mpi4py.MPI as mpi
@@ -21,16 +20,19 @@ try:
     import options
     import test_contexts_arbmpi
     import test_contexts_mpi4py
+    import test_domain_decompositions
     # add more if needed
 except ModuleNotFoundError:
     from test import options
     from test.unit_distributed import test_contexts_arbmpi
     from test.unit_distributed import test_contexts_mpi4py
+    from test.unit_distributed import test_domain_decompositions
     # add more if needed
 
 test_modules = [\
     test_contexts_arbmpi,\
-    test_contexts_mpi4py\
+    test_contexts_mpi4py,\
+    test_domain_decompositions\
 ] # add more if needed
 
 def suite():

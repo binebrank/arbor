@@ -15,6 +15,7 @@
 #include "util/maputil.hpp"
 #include "util/padded_alloc.hpp"
 #include "util/range.hpp"
+#include "util/rangeutil.hpp"
 
 #include "backends/multicore/mechanism.hpp"
 #include "backends/multicore/multicore_common.hpp"
@@ -93,7 +94,8 @@ void mechanism::instantiate(unsigned id, backend::shared_state& shared, const me
     vec_i_    = shared.current_density.data();
     vec_g_    = shared.conductivity.data();
 
-    temperature_degC_ = &shared.temperature_degC;
+    temperature_degC_ = shared.temperature_degC.data();
+    diam_um_  = shared.diam_um.data();
 
     auto ion_state_tbl = ion_state_table();
     n_ion_ = ion_state_tbl.size();
@@ -227,6 +229,15 @@ void mechanism::initialize() {
         }
     }
 }
+
+fvm_value_type* mechanism::field_data(const std::string& field_var) {
+    if (auto opt_ptr = value_by_key(field_table(), field_var)) {
+        return *opt_ptr.value();
+    }
+
+    return nullptr;
+}
+
 
 } // namespace multicore
 } // namespace arb

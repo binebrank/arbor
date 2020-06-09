@@ -65,6 +65,9 @@ public:
 
     void set_parameter(const std::string& key, const std::vector<fvm_value_type>& values) override;
 
+    // Peek into mechanism state variable; implements arb::multicore::backend::mechanism_field_data.
+    fvm_value_type* field_data(const std::string& state_var);
+
 protected:
     size_type width_ = 0;        // Instance width (number of CVs/sites)
     size_type width_padded_ = 0; // Width rounded up to multiple of pad/alignment.
@@ -79,7 +82,8 @@ protected:
     const value_type* vec_v_;     // CV to cell membrane voltage.
     value_type* vec_i_;           // CV to cell membrane current density.
     value_type* vec_g_;           // CV to cell membrane conductivity.
-    const value_type* temperature_degC_; // Pointer to global temperature scalar.
+    const value_type* temperature_degC_; // CV to temperature.
+    const value_type* diam_um_;   // CV to diameter.
     deliverable_event_stream* event_stream_ptr_;
 
     // Per-mechanism index and weight data, excepting ion indices.

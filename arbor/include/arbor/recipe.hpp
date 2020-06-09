@@ -21,8 +21,8 @@ struct probe_info {
 };
 
 /* Recipe descriptions are cell-oriented: in order that the building
- * phase can be done distributedly and in order that the recipe
- * description can be built indepdently of any runtime execution environment.
+ * phase can be distributed, and in order that the recipe description
+ * can be built indepedently of any runtime execution environment.
  */
 
 // Note: `cell_connection` and `connection` have essentially the same data
@@ -40,9 +40,9 @@ struct cell_connection {
     cell_connection_endpoint dest;
 
     float weight;
-    time_type delay;
+    float delay;
 
-    cell_connection(cell_connection_endpoint src, cell_connection_endpoint dst, float w, time_type d):
+    cell_connection(cell_connection_endpoint src, cell_connection_endpoint dst, float w, float d):
         source(src), dest(dst), weight(w), delay(d)
     {}
 };

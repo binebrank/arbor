@@ -93,6 +93,7 @@ void mechanism::instantiate(unsigned id,
     pp->vec_g_    = shared.conductivity.data();
 
     pp->temperature_degC_ = shared.temperature_degC.data();
+    pp->diam_um_ = shared.diam_um.data();
 
     auto ion_state_tbl = ion_state_table();
     num_ions_ = ion_state_tbl.size();
@@ -192,6 +193,14 @@ void mechanism::set_parameter(const std::string& key, const std::vector<fvm_valu
     else {
         throw arbor_internal_error("gpu/mechanism: no such mechanism parameter");
     }
+}
+
+fvm_value_type* mechanism::field_data(const std::string& field_var) {
+    if (auto opt_ptr = value_by_key(field_table(), field_var)) {
+        return *opt_ptr.value();
+    }
+
+    return nullptr;
 }
 
 void multiply_in_place(fvm_value_type* s, const fvm_index_type* p, int n);

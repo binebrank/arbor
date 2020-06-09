@@ -6,6 +6,7 @@
  */
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <limits>
 #include <iosfwd>
@@ -53,7 +54,7 @@ ARB_DEFINE_LEXICOGRAPHIC_ORDERING(cell_member_type,(a.gid,a.index),(b.gid,b.inde
 
 // For storing time values [ms]
 
-using time_type = float;
+using time_type = double;
 constexpr time_type terminal_time = std::numeric_limits<time_type>::max();
 
 // Extra contextual information associated with a probe.
@@ -99,10 +100,24 @@ namespace std {
     template <> struct hash<arb::cell_member_type> {
         std::size_t operator()(const arb::cell_member_type& m) const {
             using namespace arb;
-            static_assert(sizeof(std::size_t)>sizeof(cell_gid_type), "invalid size assumptions for hash of cell_member_type");
+            if (sizeof(std::size_t)>sizeof(cell_gid_type)) {
+                constexpr unsigned shift = 8*sizeof(cell_gid_type);
 
-            std::size_t k = ((std::size_t)m.gid << (8*sizeof(cell_gid_type))) + m.index;
-            return std::hash<std::size_t>{}(k);
+                std::size_t k = m.gid;
+                k <<= (shift/2); // dodge gcc shift warning when other branch taken
+                k <<= (shift/2);
+                k += m.index;
+                return std::hash<std::size_t>{}(k);
+            }
+            else {
+                constexpr std::size_t prime1 = 93481;
+                constexpr std::size_t prime2 = 54517;
+
+                std::size_t k = prime1;
+                k = k*prime2 + m.gid;
+                k = k*prime2 + m.index;
+                return k;
+            }
         }
     };
 }

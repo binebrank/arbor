@@ -16,9 +16,8 @@ except ModuleNotFoundError:
     from test import options
 
 # check Arbor's configuration of mpi
-config = arb.config()
-mpi_enabled = config["mpi"]
-mpi4py_enabled = config["mpi4py"]
+mpi_enabled    = arb.__config__["mpi"]
+mpi4py_enabled = arb.__config__["mpi4py"]
 
 if (mpi_enabled and mpi4py_enabled):
     import mpi4py.MPI as mpi
@@ -78,7 +77,7 @@ def suite():
 def run():
     v = options.parse_arguments().verbosity
 
-    comm = arb.mpi_comm_from_mpi4py(mpi.COMM_WORLD)
+    comm = arb.mpi_comm(mpi.COMM_WORLD)
     alloc = arb.proc_allocation()
     ctx = arb.context(alloc, comm)
     rank = ctx.rank

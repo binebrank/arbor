@@ -1,152 +1,182 @@
-#include <arbor/cable_cell.hpp>
-#include <arbor/segment.hpp>
-#include <arbor/morphology.hpp>
+#include <sstream>
+#include <unordered_map>
+#include <vector>
 
+#include <arbor/cable_cell.hpp>
+#include <arbor/morph/label_dict.hpp>
+#include <arbor/morph/morphology.hpp>
+#include <arbor/morph/mprovider.hpp>
+#include <arbor/util/pp_util.hpp>
+
+#include "util/piecewise.hpp"
 #include "util/rangeutil.hpp"
+#include "util/span.hpp"
+#include "util/strprintf.hpp"
 
 namespace arb {
+
+using region_map = std::unordered_map<std::string, mcable_list>;
+using locset_map = std::unordered_map<std::string, mlocation_list>;
 
 using value_type = cable_cell::value_type;
 using index_type = cable_cell::index_type;
 using size_type = cable_cell::size_type;
 
-cable_cell::cable_cell() {
-    // insert a placeholder segment for the soma
-    segments_.push_back(make_segment<placeholder_segment>());
-    parents_.push_back(0);
-}
+template <typename T> struct constant_type {
+    template <typename> using type = T;
+};
 
-void cable_cell::assert_valid_segment(index_type i) const {
-    if (i>=num_segments()) {
-        throw cable_cell_error("no such segment");
-    }
-}
+struct cable_cell_impl {
+    using value_type = cable_cell::value_type;
+    using index_type = cable_cell::index_type;
+    using size_type  = cable_cell::size_type;
 
-size_type cable_cell::num_segments() const {
-    return segments_.size();
-}
+    cable_cell_impl(const arb::morphology& m, const label_dict& dictionary):
+        provider(m, dictionary)
+    {}
 
-//
-// note: I think that we have to enforce that the soma is the first
-//       segment that is added
-//
-soma_segment* cable_cell::add_soma(value_type radius, point_type center) {
-    if (has_soma()) {
-        throw cable_cell_error("cell already has soma");
-    }
-    segments_[0] = make_segment<soma_segment>(radius, center);
-    return segments_[0]->as_soma();
-}
+    cable_cell_impl(): cable_cell_impl({},{}) {}
 
-cable_segment* cable_cell::add_cable(index_type parent, segment_ptr&& cable) {
-    if (!cable->as_cable()) {
-        throw cable_cell_error("segment is not a cable segment");
-    }
+    cable_cell_impl(const cable_cell_impl& other):
+        provider(other.provider),
+        region_map(other.region_map),
+        location_map(other.location_map)
+    {}
 
-    if (parent>num_segments()) {
-        throw cable_cell_error("parent index out of range");
-    }
+    cable_cell_impl(cable_cell_impl&& other) = default;
 
-    segments_.push_back(std::move(cable));
-    parents_.push_back(parent);
+    // Embedded morphology and labelled region/locset lookup.
+    mprovider provider;
 
-    return segments_.back()->as_cable();
-}
+    // Regional assignments.
+    cable_cell_region_map region_map;
 
-segment* cable_cell::segment(index_type index) {
-    assert_valid_segment(index);
-    return segments_[index].get();
-}
+    // Point assignments.
+    cable_cell_location_map location_map;
 
-segment const* cable_cell::segment(index_type index) const {
-    assert_valid_segment(index);
-    return segments_[index].get();
-}
+    // Track number of point assignments by type for lid/target numbers.
+    dynamic_typed_map<constant_type<cell_lid_type>::type> placed_count;
 
-bool cable_cell::has_soma() const {
-    return !segment(0)->is_placeholder();
-}
-
-soma_segment* cable_cell::soma() {
-    return has_soma()? segment(0)->as_soma(): nullptr;
-}
-
-const soma_segment* cable_cell::soma() const {
-    return has_soma()? segment(0)->as_soma(): nullptr;
-}
-
-cable_segment* cable_cell::cable(index_type index) {
-    assert_valid_segment(index);
-    auto cable = segment(index)->as_cable();
-    return cable? cable: throw cable_cell_error("segment is not a cable segment");
-}
-
-std::vector<size_type> cable_cell::compartment_counts() const {
-    std::vector<size_type> comp_count;
-    comp_count.reserve(num_segments());
-    for (const auto& s: segments()) {
-        comp_count.push_back(s->num_compartments());
-    }
-    return comp_count;
-}
-
-size_type cable_cell::num_compartments() const {
-    return util::sum_by(segments_,
-            [](const segment_ptr& s) { return s->num_compartments(); });
-}
-
-void cable_cell::add_stimulus(segment_location loc, i_clamp stim) {
-    (void)segment(loc.segment); // assert loc.segment in range
-    stimuli_.push_back({loc, std::move(stim)});
-}
-
-void cable_cell::add_detector(segment_location loc, double threshold) {
-    spike_detectors_.push_back({loc, threshold});
-}
-
-
-// Construct cell from flat morphology specification.
-
-cable_cell make_cable_cell(const morphology& morph, bool compartments_from_discretization) {
-    using point3d = cable_cell::point_type;
-    cable_cell newcell;
-
-    if (!morph) {
-        return newcell;
+    template <typename T>
+    mlocation_map<T>& get_location_map(const T&) {
+        return location_map.get<T>();
     }
 
-    arb_assert(morph.check_valid());
+    mlocation_map<mechanism_desc>& get_location_map(const mechanism_desc& desc) {
+        return location_map.get<mechanism_desc>()[desc.name()];
+    }
 
-    // (not supporting soma-less cells yet)
-    newcell.add_soma(morph.soma.r, point3d(morph.soma.x, morph.soma.y, morph.soma.z));
+    template <typename Item>
+    lid_range place(const locset& ls, const Item& item) {
+        auto& mm = get_location_map(item);
+        cell_lid_type& lid = placed_count.get<Item>();
+        cell_lid_type first = lid;
 
-    for (const section_geometry& section: morph.sections) {
-        auto kind = section.kind;
-        switch (kind) {
-        case section_kind::none: // default to dendrite
-            kind = section_kind::dendrite;
-            break;
-        case section_kind::soma:
-            throw cable_cell_error("no support for complex somata");
-            break;
-        default: ;
+        for (auto l: thingify(ls, provider)) {
+            placed<Item> p{l, lid++, item};
+            mm.push_back(p);
         }
+        return lid_range(first, lid);
+    }
 
-        std::vector<value_type> radii;
-        std::vector<point3d> points;
+    template <typename T>
+    mcable_map<T>& get_region_map(const T&) {
+        return region_map.get<T>();
+    }
 
-        for (const section_point& p: section.points) {
-            radii.push_back(p.r);
-            points.push_back(point3d(p.x, p.y, p.z));
-        }
+    mcable_map<mechanism_desc>& get_region_map(const mechanism_desc& desc) {
+        return region_map.get<mechanism_desc>()[desc.name()];
+    }
 
-        auto cable = newcell.add_cable(section.parent_id, kind, radii, points);
-        if (compartments_from_discretization) {
-            cable->as_cable()->set_compartments(radii.size()-1);
+    mcable_map<initial_ion_data>& get_region_map(const initial_ion_data& init) {
+        return region_map.get<initial_ion_data>()[init.ion];
+    }
+
+    template <typename Property>
+    void paint(const region& reg, const Property& prop) {
+        mextent cables = thingify(reg, provider);
+        auto& mm = get_region_map(prop);
+
+        for (auto c: cables) {
+            // Skip zero-length cables in extent:
+            if (c.prox_pos==c.dist_pos) continue;
+
+            if (!mm.insert(c, prop)) {
+                throw cable_cell_error(util::pprintf("cable {} overpaints", c));
+            }
         }
     }
 
-    return newcell;
+    mlocation_list concrete_locset(const locset& l) const {
+        return thingify(l, provider);
+    }
+
+    mextent concrete_region(const region& r) const {
+        return thingify(r, provider);
+    }
+};
+
+using impl_ptr = std::unique_ptr<cable_cell_impl, void (*)(cable_cell_impl*)>;
+impl_ptr make_impl(cable_cell_impl* c) {
+    return impl_ptr(c, [](cable_cell_impl* p){delete p;});
 }
+
+cable_cell::cable_cell(const arb::morphology& m, const label_dict& dictionary):
+    impl_(make_impl(new cable_cell_impl(m, dictionary)))
+{}
+
+cable_cell::cable_cell(): impl_(make_impl(new cable_cell_impl())) {}
+
+cable_cell::cable_cell(const cable_cell& other):
+    default_parameters(other.default_parameters),
+    impl_(make_impl(new cable_cell_impl(*other.impl_)))
+{}
+
+const concrete_embedding& cable_cell::embedding() const {
+    return impl_->provider.embedding();
+}
+
+const arb::morphology& cable_cell::morphology() const {
+    return impl_->provider.morphology();
+}
+
+const mprovider& cable_cell::provider() const {
+    return impl_->provider;
+}
+
+mlocation_list cable_cell::concrete_locset(const locset& l) const {
+    return impl_->concrete_locset(l);
+}
+
+mextent cable_cell::concrete_region(const region& r) const {
+    return impl_->concrete_region(r);
+}
+
+const cable_cell_location_map& cable_cell::location_assignments() const {
+    return impl_->location_map;
+}
+
+const cable_cell_region_map& cable_cell::region_assignments() const {
+    return impl_->region_map;
+}
+
+// Forward paint methods to implementation class.
+
+#define FWD_PAINT(proptype)\
+void cable_cell::paint(const region& target, proptype prop) {\
+    impl_->paint(target, prop);\
+}
+ARB_PP_FOREACH(FWD_PAINT,\
+    mechanism_desc, init_membrane_potential, axial_resistivity,\
+    temperature_K, membrane_capacitance, initial_ion_data)
+
+// Forward place methods to implementation class.
+
+#define FWD_PLACE(proptype)\
+lid_range cable_cell::place(const locset& target, proptype prop) {\
+    return impl_->place(target, prop);\
+}
+ARB_PP_FOREACH(FWD_PLACE,\
+    mechanism_desc, i_clamp, gap_junction_site, threshold_detector)
 
 } // namespace arb

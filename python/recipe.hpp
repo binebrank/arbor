@@ -7,9 +7,15 @@
 #include <pybind11/stl.h>
 
 #include <arbor/event_generator.hpp>
+#include <arbor/cable_cell_param.hpp>
 #include <arbor/recipe.hpp>
 
+#include "error.hpp"
+#include "strprintf.hpp"
+
 namespace pyarb {
+
+arb::probe_info cable_probe(std::string kind, arb::cell_member_type id, arb::mlocation loc);
 
 // pyarb::recipe is the recipe interface used by Python.
 // Calls that return generic types return pybind11::object, to avoid
@@ -47,9 +53,12 @@ public:
     virtual std::vector<arb::gap_junction_connection> gap_junctions_on(arb::cell_gid_type) const {
         return {};
     }
-
-    //TODO: virtual arb::cell_size_type num_probes(arb::cell_gid_type) const { return 0; }
-    //TODO: virtual pybind11::object get_probe (arb::cell_member_type id) const {...}
+    virtual arb::cell_size_type num_probes(arb::cell_gid_type) const {
+        return 0;
+    }
+    virtual arb::probe_info get_probe (arb::cell_member_type id) const {
+        throw pyarb_error(util::pprintf("bad probe id {}", id));
+    }
     //TODO: virtual pybind11::object global_properties(arb::cell_kind kind) const {return pybind11::none();};
 };
 
@@ -91,8 +100,13 @@ public:
         PYBIND11_OVERLOAD(std::vector<arb::gap_junction_connection>, py_recipe, gap_junctions_on, gid);
     }
 
-    //TODO: arb::cell_size_type num_probes(arb::cell_gid_type)
-    //TODO: pybind11::object get_probe(arb::cell_member_type id)
+    arb::cell_size_type num_probes(arb::cell_gid_type gid) const override {
+        PYBIND11_OVERLOAD(arb::cell_size_type, py_recipe, num_probes, gid);
+    }
+
+    arb::probe_info get_probe(arb::cell_member_type id) const override {
+        PYBIND11_OVERLOAD(arb::probe_info, py_recipe, get_probe, id);
+    }
 };
 
 // A recipe shim that holds a pyarb::recipe implementation.
@@ -110,8 +124,10 @@ public:
 
     py_recipe_shim(std::shared_ptr<py_recipe> r): impl_(std::move(r)) {}
 
+    const char* msg = "Python error already thrown";
+
     arb::cell_size_type num_cells() const override {
-        return impl_->num_cells();
+        return try_catch_pyexception([&](){ return impl_->num_cells(); }, msg);
     }
 
     // The pyarb::recipe::cell_decription returns a pybind11::object, that is
@@ -119,37 +135,46 @@ public:
     arb::util::unique_any get_cell_description(arb::cell_gid_type gid) const override;
 
     arb::cell_kind get_cell_kind(arb::cell_gid_type gid) const override {
-        return impl_->cell_kind(gid);
+        return try_catch_pyexception([&](){ return impl_->cell_kind(gid); }, msg);
     }
 
     arb::cell_size_type num_sources(arb::cell_gid_type gid) const override {
-        return impl_->num_sources(gid);
+        return try_catch_pyexception([&](){ return impl_->num_sources(gid); }, msg);
     }
 
     arb::cell_size_type num_targets(arb::cell_gid_type gid) const override {
-        return impl_->num_targets(gid);
+        return try_catch_pyexception([&](){ return impl_->num_targets(gid); }, msg);
     }
 
-    //TODO: arb::cell_size_type num_probes(arb::cell_gid_type gid)
-
     arb::cell_size_type num_gap_junction_sites(arb::cell_gid_type gid) const override {
-        return impl_->num_gap_junction_sites(gid);
+        return try_catch_pyexception([&](){ return impl_->num_gap_junction_sites(gid); }, msg);
     }
 
     std::vector<arb::event_generator> event_generators(arb::cell_gid_type gid) const override;
 
     std::vector<arb::cell_connection> connections_on(arb::cell_gid_type gid) const override {
-        return impl_->connections_on(gid);
+        return try_catch_pyexception([&](){ return impl_->connections_on(gid); }, msg);
     }
 
     std::vector<arb::gap_junction_connection> gap_junctions_on(arb::cell_gid_type gid) const override {
-        return impl_->gap_junctions_on(gid);
+        return try_catch_pyexception([&](){ return impl_->gap_junctions_on(gid); }, msg);
     }
 
-    //TODO: arb::probe_info get_probe(arb::cell_member_type id)
+    arb::cell_size_type num_probes(arb::cell_gid_type gid) const override {
+        return try_catch_pyexception([&](){ return impl_->num_probes(gid); }, msg);
+    }
 
-    // TODO: wrap
+    arb::probe_info get_probe(arb::cell_member_type id) const override {
+        return try_catch_pyexception([&](){ return impl_->get_probe(id); }, msg);
+    }
+
+    // TODO: make thread safe
     arb::util::any get_global_properties(arb::cell_kind kind) const override {
+        if (kind==arb::cell_kind::cable) {
+            arb::cable_cell_global_properties gprop;
+            gprop.default_parameters = arb::neuron_parameter_defaults;
+            return gprop;
+        }
         return arb::util::any{};
     }
 };

@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include <arbor/assert_macro.hpp>
+#include <arbor/cable_cell.hpp>
 #include <arbor/common_types.hpp>
 #include <arbor/context.hpp>
 #include <arbor/load_balance.hpp>
@@ -26,13 +27,25 @@
 
 #include <sup/ioutil.hpp>
 #include <sup/json_meter.hpp>
-
-#include "parameters.hpp"
+#include <sup/json_params.hpp>
 
 #ifdef ARB_MPI_ENABLED
 #include <mpi.h>
 #include <arborenv/with_mpi.hpp>
 #endif
+
+struct gap_params {
+    std::string name = "default";
+    unsigned n_cables = 3;
+    unsigned n_cells_per_cable = 5;
+    double stim_duration = 30;
+    double event_min_delay = 10;
+    double event_weight = 0.05;
+    double sim_duration = 100;
+    bool print_all = true;
+};
+
+gap_params read_options(int argc, char** argv);
 
 using arb::cell_gid_type;
 using arb::cell_lid_type;
@@ -40,7 +53,6 @@ using arb::cell_size_type;
 using arb::cell_member_type;
 using arb::cell_kind;
 using arb::time_type;
-using arb::cell_probe_address;
 
 // Writes voltage trace as a json file.
 void write_trace_json(const std::vector<arb::trace_data<double>>& trace, unsigned rank);
@@ -87,17 +99,15 @@ public:
     }
 
     arb::probe_info get_probe(cell_member_type id) const override {
-        // Get the appropriate kind for measuring voltage.
-        cell_probe_address::probe_kind kind = cell_probe_address::membrane_voltage;
         // Measure at the soma.
-        arb::segment_location loc(0, 1);
-
-        return arb::probe_info{id, kind, cell_probe_address{loc, kind}};
+        arb::mlocation loc{0, 1.};
+        return arb::probe_info{id, 0, arb::cable_probe_membrane_voltage{loc}};
     }
 
     arb::util::any get_global_properties(cell_kind k) const override {
         arb::cable_cell_global_properties a;
-        a.temperature_K = 308.15;
+        a.default_parameters = arb::neuron_parameter_defaults;
+        a.default_parameters.temperature_K = 308.15;
         return a;
     }
 
@@ -127,49 +137,6 @@ public:
 private:
     gap_params params_;
 };
-
-struct cell_stats {
-    using size_type = unsigned;
-    size_type ncells = 0;
-    size_type nsegs = 0;
-    size_type ncomp = 0;
-
-    cell_stats(arb::recipe& r) {
-#ifdef ARB_MPI_ENABLED
-        int nranks, rank;
-        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-        MPI_Comm_size(MPI_COMM_WORLD, &nranks);
-        ncells = r.num_cells();
-        size_type cells_per_rank = ncells/nranks;
-        size_type b = rank*cells_per_rank;
-        size_type e = (rank==nranks-1)? ncells: (rank+1)*cells_per_rank;
-        size_type nsegs_tmp = 0;
-        size_type ncomp_tmp = 0;
-        for (size_type i=b; i<e; ++i) {
-            auto c = arb::util::any_cast<arb::cable_cell>(r.get_cell_description(i));
-            nsegs_tmp += c.num_segments();
-            ncomp_tmp += c.num_compartments();
-        }
-        MPI_Allreduce(&nsegs_tmp, &nsegs, 1, MPI_UNSIGNED, MPI_SUM, MPI_COMM_WORLD);
-        MPI_Allreduce(&ncomp_tmp, &ncomp, 1, MPI_UNSIGNED, MPI_SUM, MPI_COMM_WORLD);
-#else
-        ncells = r.num_cells();
-        for (size_type i=0; i<ncells; ++i) {
-            auto c = arb::util::any_cast<arb::cable_cell>(r.get_cell_description(i));
-            nsegs += c.num_segments();
-            ncomp += c.num_compartments();
-        }
-#endif
-    }
-
-    friend std::ostream& operator<<(std::ostream& o, const cell_stats& s) {
-        return o << "cell stats: "
-                 << s.ncells << " cells; "
-                 << s.nsegs << " segments; "
-                 << s.ncomp << " compartments.";
-    }
-};
-
 
 int main(int argc, char** argv) {
     try {
@@ -216,9 +183,6 @@ int main(int argc, char** argv) {
 
         // Create an instance of our recipe.
         gj_recipe recipe(params);
-
-        cell_stats stats(recipe);
-        std::cout << stats << "\n";
 
         auto decomp = arb::partition_load_balance(recipe, context);
 
@@ -320,53 +284,101 @@ void write_trace_json(const std::vector<arb::trace_data<double>>& trace, unsigne
 }
 
 arb::cable_cell gj_cell(cell_gid_type gid, unsigned ncell, double stim_duration) {
-    arb::cable_cell cell;
+    // Create the sample tree that defines the morphology.
+    arb::sample_tree tree;
+    double soma_rad = 22.360679775/2.0; // convert diameter to radius in μm
+    tree.append({{0,0,0,soma_rad}, 1}); // soma is a single sample point
+    double dend_rad = 3./2;
+    tree.append(0, {{0,0,soma_rad,     dend_rad}, 3});  // proximal point of the dendrite
+    tree.append(1, {{0,0,soma_rad+300, dend_rad}, 3});  // distal end of the dendrite
 
+    // Create a label dictionary that creates a single region that covers the whole cell.
+    arb::label_dict d;
+    d.set("all",  arb::reg::all());
+
+    // Create the cell and set its electrical properties.
+    arb::cable_cell cell(tree, d);
+    cell.default_parameters.axial_resistivity = 100;       // [Ω·cm]
+    cell.default_parameters.membrane_capacitance = 0.018;  // [F/m²]
+
+    // Define the density channels and their parameters.
     arb::mechanism_desc nax("nax");
+    nax["gbar"] = 0.04;
+    nax["sh"] = 10;
+
     arb::mechanism_desc kdrmt("kdrmt");
+    kdrmt["gbar"] = 0.0001;
+
     arb::mechanism_desc kamt("kamt");
+    kamt["gbar"] = 0.004;
+
     arb::mechanism_desc pas("pas");
+    pas["g"] =  1.0/12000.0;
+    pas["e"] =  -65;
 
-    auto set_reg_params = [&]() {
-        nax["gbar"] = 0.04;
-        nax["sh"] = 10;
-        kdrmt["gbar"] = 0.0001;
-        kamt["gbar"] = 0.004;
-        pas["g"] =  1.0/12000.0;
-        pas["e"] =  -65;
-    };
+    // Paint density channels on all parts of the cell
+    cell.paint("all", nax);
+    cell.paint("all", kdrmt);
+    cell.paint("all", kamt);
+    cell.paint("all", pas);
 
-    auto setup_seg = [&](auto seg) {
-        seg->rL = 100;
-        seg->cm = 0.018;
-        seg->add_mechanism(nax);
-        seg->add_mechanism(kdrmt);
-        seg->add_mechanism(kamt);
-        seg->add_mechanism(pas);
-    };
+    // Add a spike detector to the soma.
+    cell.place(arb::mlocation{0,0}, arb::threshold_detector{10});
 
-    auto soma = cell.add_soma(22.360679775/2.0);
-    set_reg_params();
-    setup_seg(soma);
+    // Add two gap junction sites.
+    cell.place(arb::mlocation{0, 1}, arb::gap_junction_site{});
+    cell.place(arb::mlocation{1, 1}, arb::gap_junction_site{});
 
-    auto dend = cell.add_cable(0, arb::section_kind::dendrite, 3.0/2.0, 3.0/2.0, 300); //cable 1
-    dend->set_compartments(1);
-    set_reg_params();
-    setup_seg(dend);
-
-    cell.add_detector({0,0}, 10);
-
-    cell.add_gap_junction({0, 1});
-    cell.add_gap_junction({1, 1});
-
+    // Attach a stimulus to the second cell.
     if (!gid) {
         arb::i_clamp stim(0, stim_duration, 0.4);
-        cell.add_stimulus({0, 0.5}, stim);
+        cell.place(arb::mlocation{0, 0.5}, stim);
     }
 
     // Add a synapse to the mid point of the first dendrite.
-    cell.add_synapse({1, 0.5}, "expsyn");
+    cell.place(arb::mlocation{1, 0.5}, "expsyn");
 
     return cell;
 }
 
+gap_params read_options(int argc, char** argv) {
+    using sup::param_from_json;
+
+    gap_params params;
+    if (argc<2) {
+        std::cout << "Using default parameters.\n";
+        return params;
+    }
+    if (argc>2) {
+        throw std::runtime_error("More than command line one option not permitted.");
+    }
+
+    std::string fname = argv[1];
+    std::cout << "Loading parameters from file: " << fname << "\n";
+    std::ifstream f(fname);
+
+    if (!f.good()) {
+        throw std::runtime_error("Unable to open input parameter file: "+fname);
+    }
+
+    nlohmann::json json;
+    json << f;
+
+    param_from_json(params.name, "name", json);
+    param_from_json(params.n_cables, "n-cables", json);
+    param_from_json(params.n_cells_per_cable, "n-cells-per-cable", json);
+    param_from_json(params.stim_duration, "stim-duration", json);
+    param_from_json(params.event_min_delay, "event-min-delay", json);
+    param_from_json(params.event_weight, "event-weight", json);
+    param_from_json(params.sim_duration, "sim-duration", json);
+    param_from_json(params.print_all, "print-all", json);
+
+    if (!json.empty()) {
+        for (auto it=json.begin(); it!=json.end(); ++it) {
+            std::cout << "  Warning: unused input parameter: \"" << it.key() << "\"\n";
+        }
+        std::cout << "\n";
+    }
+
+    return params;
+}

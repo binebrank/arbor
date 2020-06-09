@@ -7,18 +7,20 @@
 
 #include <arbor/load_balance.hpp>
 #include <arbor/cable_cell.hpp>
-#include <arbor/morphology.hpp>
+#include <arbor/morph/morphology.hpp>
+#include <arbor/morph/sample_tree.hpp>
 #include <arbor/swcio.hpp>
 #include <arbor/simulation.hpp>
 #include <arbor/simple_sampler.hpp>
 
-#include <sup/tinyopt.hpp>
+#include <tinyopt/tinyopt.h>
 
 struct options {
     std::string swc_file;
     double t_end = 20;
     double dt = 0.025;
     float syn_weight = 0.01;
+    arb::cv_policy policy = arb::default_cv_policy();
 };
 
 options parse_options(int argc, char** argv);
@@ -26,15 +28,18 @@ arb::morphology default_morphology();
 arb::morphology read_swc(const std::string& path);
 
 struct single_recipe: public arb::recipe {
-    explicit single_recipe(arb::morphology m): morpho(m) {}
+    explicit single_recipe(arb::morphology m, arb::cv_policy pol): morpho(std::move(m)) {
+        gprop.default_parameters = arb::neuron_parameter_defaults;
+        gprop.default_parameters.discretization = pol;
+    }
 
     arb::cell_size_type num_cells() const override { return 1; }
     arb::cell_size_type num_probes(arb::cell_gid_type) const override { return 1; }
     arb::cell_size_type num_targets(arb::cell_gid_type) const override { return 1; }
 
     arb::probe_info get_probe(arb::cell_member_type probe_id) const override {
-        arb::segment_location mid_soma = {0, 0.5};
-        arb::cell_probe_address probe = {mid_soma, arb::cell_probe_address::membrane_voltage};
+        arb::mlocation mid_soma = {0, 0.5};
+        arb::cable_probe_membrane_voltage probe = {mid_soma};
 
         // Probe info consists of: the probe id, a tag value to distinguish this probe
         // from others for any attached sampler (unused), and the cell probe address.
@@ -46,42 +51,38 @@ struct single_recipe: public arb::recipe {
         return arb::cell_kind::cable;
     }
 
+    arb::util::any get_global_properties(arb::cell_kind) const override {
+        return gprop;
+    }
+
     arb::util::unique_any get_cell_description(arb::cell_gid_type) const override {
-        arb::cable_cell c = make_cable_cell(morpho);
+        arb::label_dict dict;
+        using arb::reg::tagged;
+        dict.set("soma", tagged(1));
+        dict.set("dend", join(tagged(3), tagged(4), tagged(42)));
+        arb::cable_cell c(morpho, dict);
 
         // Add HH mechanism to soma, passive channels to dendrites.
-        // Discretize dendrites according to the NEURON d-lambda rule.
+        c.paint("soma", "hh");
+        c.paint("dend", "pas");
 
-        for (auto& segment: c.segments()) {
-            if (segment->is_soma()) {
-                segment->add_mechanism("hh");
-            }
-            else {
-                segment->add_mechanism("pas");
+        // Add synapse to last branch.
 
-                double dx = segment->length_constant(100.)*0.3;
-                unsigned n = std::ceil(segment->as_cable()->length()/dx);
-                segment->set_compartments(n);
-
-            }
-        }
-
-        // Add synapse to last segment.
-
-        arb::cell_lid_type last_segment = morpho.components()-1;
-        arb::segment_location end_last_segment = { last_segment, 1. };
-        c.add_synapse(end_last_segment, "exp2syn");
+        arb::cell_lid_type last_branch = c.morphology().num_branches()-1;
+        arb::mlocation end_last_branch = { last_branch, 1. };
+        c.place(end_last_branch, "exp2syn");
 
         return c;
     }
 
     arb::morphology morpho;
+    arb::cable_cell_global_properties gprop;
 };
 
 int main(int argc, char** argv) {
     try {
         options opt = parse_options(argc, argv);
-        single_recipe R(opt.swc_file.empty()? default_morphology(): read_swc(opt.swc_file));
+        single_recipe R(opt.swc_file.empty()? default_morphology(): read_swc(opt.swc_file), opt.policy);
 
         auto context = arb::make_context();
         arb::simulation sim(R, arb::partition_load_balance(R, context), context);
@@ -116,20 +117,23 @@ options parse_options(int argc, char** argv) {
 
     char** arg = argv+1;
     while (*arg) {
-        if (auto dt = parse_opt<double>(arg, 'd', "dt")) {
+        if (auto dt = parse<double>(arg, 'd', "dt")) {
             opt.dt = dt.value();
         }
-        else if (auto t_end = parse_opt<double>(arg, 't', "t-end")) {
+        else if (auto t_end = parse<double>(arg, 't', "t-end")) {
             opt.t_end = t_end.value();
         }
-        else if (auto weight = parse_opt<float>(arg, 'w', "weight")) {
+        else if (auto weight = parse<float>(arg, 'w', "weight")) {
             opt.syn_weight = weight.value();
         }
-        else if (auto swc = parse_opt<std::string>(arg, 'm', "morphology")) {
+        else if (auto swc = parse<std::string>(arg, 'm', "morphology")) {
             opt.swc_file = swc.value();
         }
+        else if (auto nseg = parse<unsigned>(arg, 'n', "cv-per-branch")) {
+            opt.policy = arb::cv_policy_fixed_per_branch(nseg.value(), arb::cv_policy_flag::single_root_cv);
+        }
         else {
-            usage(argv[0], "[-m|--morphology SWCFILE] [-d|--dt TIME] [-t|--t-end TIME] [-w|--weight WEIGHT]");
+            usage(argv[0], "[-m|--morphology SWCFILE] [-d|--dt TIME] [-t|--t-end TIME] [-w|--weight WEIGHT] [-n|--cv-per-branch N]");
             std::exit(1);
         }
     }
@@ -142,25 +146,18 @@ options parse_options(int argc, char** argv) {
 // to 0.2 µm.
 
 arb::morphology default_morphology() {
-    arb::morphology m;
+    arb::sample_tree samples;
 
-    // Points in a morphology are expressed as (x, y, z, r),
-    // with r being the radius. Units are µm.
+    auto p = samples.append(arb::msample{{  0.0, 0.0, 0.0, 6.3}, 1});
+    p = samples.append(p, arb::msample{{  6.3, 0.0, 0.0, 0.5}, 3});
+    p = samples.append(p, arb::msample{{206.3, 0.0, 0.0, 0.2}, 3});
 
-    m.soma = {0., 0., 0., 6.3};
-
-    std::vector<arb::section_point> dendrite = {
-        {6.3, 0., 0., 0.5},
-        {206.3, 0., 0., 0.2}
-    };
-    m.add_section(dendrite, 0);
-
-    return m;
+    return arb::morphology(std::move(samples));
 }
 
 arb::morphology read_swc(const std::string& path) {
     std::ifstream f(path);
     if (!f) throw std::runtime_error("unable to open SWC file: "+path);
 
-    return arb::swc_as_morphology(arb::parse_swc_file(f));
+    return arb::morphology(arb::swc_as_sample_tree(arb::parse_swc_file(f)));
 }

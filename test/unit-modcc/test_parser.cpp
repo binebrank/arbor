@@ -93,7 +93,7 @@ TEST(Parser, procedure) {
         "  y = a + b *c + a + b\n"
         "}"
         ,
-        "PROCEDURE trates(v) {\n"
+        "PROCEDURE trates(v (mV)) {\n"
         "    LOCAL qt\n"
         "    qt=q10^((celsius-22)/10)\n"
         "    minf=1-1/(1+exp((v-vhalfm)/km))\n"
@@ -106,6 +106,83 @@ TEST(Parser, procedure) {
     for (const auto& str: calls) {
         EXPECT_TRUE(check_parse(&Parser::parse_procedure, str));
     }
+}
+
+TEST(Parser, load_constant) {
+    char str[] = {
+            "CONSTANT {\n"
+            "  t0 = -1.2\n"
+            "  t1 = 0.5\n"
+            "  t2 = -t0\n"
+            "  t3 = -t1\n"
+            "}"
+    };
+
+    Parser p(str);
+    p.parse_constant_block();
+    EXPECT_TRUE(p.status()==lexerStatus::happy);
+
+    EXPECT_TRUE(p.constants_map_.find("t0") != p.constants_map_.end());
+    EXPECT_EQ("-1.2", p.constants_map_.at("t0"));
+
+    EXPECT_TRUE(p.constants_map_.find("t1") != p.constants_map_.end());
+    EXPECT_EQ("0.5", p.constants_map_.at("t1"));
+
+    EXPECT_TRUE(p.constants_map_.find("t2") != p.constants_map_.end());
+    EXPECT_EQ("1.2", p.constants_map_.at("t2"));
+
+    EXPECT_TRUE(p.constants_map_.find("t3") != p.constants_map_.end());
+    EXPECT_EQ("-0.5", p.constants_map_.at("t3"));
+}
+
+TEST(Parser, parameters_from_constant) {
+    const char str[] =
+            "PARAMETER {   \n"
+            "  tau = -t0   \n"
+            "  e = t1      \n"
+            "}";
+
+    expression_ptr null;
+    Module m(str, str+std::strlen(str), "");
+    Parser p(m, false);
+    p.constants_map_.insert({"t0","-0.5"});
+    p.constants_map_.insert({"t1","1.2"});
+    p.parse_parameter_block();
+
+    EXPECT_EQ(lexerStatus::happy, p.status());
+    verbose_print(null, p, str);
+
+    auto param_block = m.parameter_block();
+    EXPECT_EQ("tau", param_block.parameters[0].name());
+    EXPECT_EQ("0.5", param_block.parameters[0].value);
+    EXPECT_EQ("e", param_block.parameters[1].name());
+    EXPECT_EQ("1.2", param_block.parameters[1].value);
+}
+
+TEST(Parser, parameters_range) {
+    const char str[] =
+            "PARAMETER {   \n"
+            "  tau = 0.2 <0,1000>  \n"
+            "  rho = 0.2 \n"
+            "}";
+
+    expression_ptr null;
+    Module m(str, str+std::strlen(str), "");
+    Parser p(m, false);
+    p.parse_parameter_block();
+
+    EXPECT_EQ(lexerStatus::happy, p.status());
+    verbose_print(null, p, str);
+
+    auto param_block = m.parameter_block();
+    EXPECT_EQ("tau",  param_block.parameters[0].name());
+    EXPECT_EQ("0.2",  param_block.parameters[0].value);
+    EXPECT_EQ("0",    param_block.parameters[0].range.first.spelling);
+    EXPECT_EQ("1000", param_block.parameters[0].range.second.spelling);
+    EXPECT_EQ("rho",  param_block.parameters[1].name());
+    EXPECT_EQ("0.2",  param_block.parameters[1].value);
+    EXPECT_EQ("",     param_block.parameters[1].range.first.spelling);
+    EXPECT_EQ("",     param_block.parameters[1].range.second.spelling);
 }
 
 TEST(Parser, net_receive) {
@@ -204,7 +281,20 @@ TEST(Parser, parse_if) {
     }
 
     EXPECT_TRUE(check_parse(s, &Parser::parse_if,
-        "   if(abs(a-b)) {      \n"
+        "   IF(a<b) {      \n"
+        "       a = 2+b    \n"
+        "   } ELSE {       \n"
+        "       a = 2+b    \n"
+        "   }                "
+    ));
+    if (s) {
+        EXPECT_NE(s->condition()->is_binary(), nullptr);
+        EXPECT_NE(s->true_branch()->is_block(), nullptr);
+        EXPECT_NE(s->false_branch(), nullptr);
+    }
+
+    EXPECT_TRUE(check_parse(s, &Parser::parse_if,
+        "   if(fabs(a-b)) {      \n"
         "       a = 2+b    \n"
         "   } else if(b>a){\n"
         "       a = 2+b    \n"
@@ -214,8 +304,10 @@ TEST(Parser, parse_if) {
         EXPECT_NE(s->condition()->is_unary(), nullptr);
         EXPECT_NE(s->true_branch()->is_block(), nullptr);
         ASSERT_NE(s->false_branch(), nullptr);
-        ASSERT_NE(s->false_branch()->is_if(), nullptr);
-        EXPECT_EQ(s->false_branch()->is_if()->false_branch(), nullptr);
+        ASSERT_NE(s->false_branch()->is_block(), nullptr);
+
+        auto false_if_branch = s->false_branch()->is_block()->statements().front()->clone();
+        EXPECT_EQ(false_if_branch->is_if()->false_branch(), nullptr);
     }
 }
 
@@ -415,7 +507,7 @@ TEST(Parser, parse_reaction_expression) {
 
     for (auto& text: good_expr) {
         std::unique_ptr<ReactionExpression> s;
-        EXPECT_TRUE(check_parse(s, &Parser::parse_reaction_expression, text));
+        EXPECT_TRUE(check_parse(s, &Parser::parse_tilde_expression, text));
     }
 
     const char* bad_expr[] = {
@@ -432,7 +524,7 @@ TEST(Parser, parse_reaction_expression) {
     };
 
     for (auto& text: bad_expr) {
-        EXPECT_TRUE(check_parse_fail(&Parser::parse_reaction_expression, text));
+        EXPECT_TRUE(check_parse_fail(&Parser::parse_tilde_expression, text));
     }
 }
 
@@ -593,6 +685,10 @@ TEST(Parser, parse_state_block) {
         "STATE {\n"
         "    h (nA)\n"
         "    m (nA) r (uA)\n"
+        "}",
+        "STATE {\n"
+        "    h FROM 0 TO 1\n"
+        "    m r (uA)\n"
         "}"
     };
 

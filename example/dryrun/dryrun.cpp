@@ -3,17 +3,18 @@
  *
  */
 
+#include <cassert>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 
 #include <nlohmann/json.hpp>
 
-#include <arbor/assert_macro.hpp>
 #include <arbor/common_types.hpp>
 #include <arbor/context.hpp>
-#include <arbor/load_balance.hpp>
 #include <arbor/cable_cell.hpp>
+#include <arbor/load_balance.hpp>
+#include <arbor/morph/primitives.hpp>
 #include <arbor/profile/meter_manager.hpp>
 #include <arbor/profile/profiler.hpp>
 #include <arbor/simple_sampler.hpp>
@@ -24,13 +25,26 @@
 
 #include <sup/ioutil.hpp>
 #include <sup/json_meter.hpp>
+#include <sup/json_params.hpp>
 
-#include "parameters.hpp"
+#include "branch_cell.hpp"
 
 #ifdef ARB_MPI_ENABLED
 #include <mpi.h>
 #include <arborenv/with_mpi.hpp>
 #endif
+
+struct run_params {
+    std::string name = "default";
+    bool dry_run = false;
+    unsigned num_cells_per_rank = 10;
+    unsigned num_ranks = 1;
+    double min_delay = 10;
+    double duration = 100;
+    cell_parameters cell;
+};
+
+run_params read_options(int argc, char** argv);
 
 using arb::cell_gid_type;
 using arb::cell_lid_type;
@@ -38,7 +52,6 @@ using arb::cell_size_type;
 using arb::cell_member_type;
 using arb::cell_kind;
 using arb::time_type;
-using arb::cell_probe_address;
 
 // Generate a cell.
 arb::cable_cell branch_cell(arb::cell_gid_type gid, const cell_parameters& params);
@@ -66,6 +79,12 @@ public:
 
     cell_kind get_cell_kind(cell_gid_type gid) const override {
         return cell_kind::cable;
+    }
+
+    arb::util::any get_global_properties(arb::cell_kind) const override {
+        arb::cable_cell_global_properties gprop;
+        gprop.default_parameters = arb::neuron_parameter_defaults;
+        return gprop;
     }
 
     // Each cell has one spike detector (at the soma).
@@ -107,12 +126,10 @@ public:
     }
 
     arb::probe_info get_probe(cell_member_type id) const override {
-        // Get the appropriate kind for measuring voltage.
-        cell_probe_address::probe_kind kind = cell_probe_address::membrane_voltage;
         // Measure at the soma.
-        arb::segment_location loc(0, 0.0);
+        arb::mlocation loc{0, 0.0};
 
-        return arb::probe_info{id, kind, cell_probe_address{loc, kind}};
+        return arb::probe_info{id, 0, arb::cable_probe_membrane_voltage{loc}};
     }
 
 private:
@@ -122,69 +139,6 @@ private:
     double min_delay_;
     float event_weight_ = 0.01;
 };
-
-struct cell_stats {
-    using size_type = unsigned;
-    size_type ncells = 0;
-    int nranks = 1;
-    size_type nsegs = 0;
-    size_type ncomp = 0;
-
-    cell_stats(arb::recipe& r, run_params params) {
-#ifdef ARB_MPI_ENABLED
-        if(!params.dry_run) {
-            int rank;
-            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-            MPI_Comm_size(MPI_COMM_WORLD, &nranks);
-            ncells = r.num_cells();
-            size_type cells_per_rank = ncells/nranks;
-            size_type b = rank*cells_per_rank;
-            size_type e = (rank+1)*cells_per_rank;
-            size_type nsegs_tmp = 0;
-            size_type ncomp_tmp = 0;
-            for (size_type i=b; i<e; ++i) {
-                auto c = arb::util::any_cast<arb::cable_cell>(r.get_cell_description(i));
-                nsegs_tmp += c.num_segments();
-                ncomp_tmp += c.num_compartments();
-            }
-            MPI_Allreduce(&nsegs_tmp, &nsegs, 1, MPI_UNSIGNED, MPI_SUM, MPI_COMM_WORLD);
-            MPI_Allreduce(&ncomp_tmp, &ncomp, 1, MPI_UNSIGNED, MPI_SUM, MPI_COMM_WORLD);
-        }
-#else
-        if(!params.dry_run) {
-            nranks = 1;
-            ncells = r.num_cells();
-            for (size_type i = 0; i < ncells; ++i) {
-                auto c = arb::util::any_cast<arb::cable_cell>(r.get_cell_description(i));
-                nsegs += c.num_segments();
-                ncomp += c.num_compartments();
-            }
-        }
-#endif
-        else {
-            nranks = params.num_ranks;
-            ncells = r.num_cells(); //total number of cells across all ranks
-
-            for (size_type i = 0; i < params.num_cells_per_rank; ++i) {
-                auto c = arb::util::any_cast<arb::cable_cell>(r.get_cell_description(i));
-                nsegs += c.num_segments();
-                ncomp += c.num_compartments();
-            }
-
-            nsegs *= params.num_ranks;
-            ncomp *= params.num_ranks;
-        }
-    }
-
-    friend std::ostream& operator<<(std::ostream& o, const cell_stats& s) {
-        return o << "cell stats: "
-                 << s.nranks << " ranks; "
-                 << s.ncells << " cells; "
-                 << s.nsegs << " segments; "
-                 << s.ncomp << " compartments.";
-    }
-};
-
 
 int main(int argc, char** argv) {
     try {
@@ -210,7 +164,7 @@ int main(int argc, char** argv) {
             }
         }
 #endif
-        arb_assert(arb::num_ranks(ctx)==params.num_ranks);
+        assert(arb::num_ranks(ctx)==params.num_ranks);
 
 
 #ifdef ARB_PROFILE_ENABLED
@@ -233,9 +187,6 @@ int main(int argc, char** argv) {
         auto tile = std::make_unique<tile_desc>(params.num_cells_per_rank,
                 params.num_ranks, params.cell, params.min_delay);
         arb::symmetric_recipe recipe(std::move(tile));
-
-        cell_stats stats(recipe, params);
-        std::cout << stats << "\n";
 
         auto decomp = arb::partition_load_balance(recipe, ctx);
 
@@ -293,65 +244,43 @@ int main(int argc, char** argv) {
     return 0;
 }
 
-// Helper used to interpolate in branch_cell.
-template <typename T>
-double interp(const std::array<T,2>& r, unsigned i, unsigned n) {
-    double p = i * 1./(n-1);
-    double r0 = r[0];
-    double r1 = r[1];
-    return r[0] + p*(r1-r0);
-}
+run_params read_options(int argc, char** argv) {
+    using sup::param_from_json;
 
-arb::cable_cell branch_cell(arb::cell_gid_type gid, const cell_parameters& params) {
-    arb::cable_cell cell;
-
-    // Add soma.
-    auto soma = cell.add_soma(12.6157/2.0); // For area of 500 μm².
-    soma->rL = 100;
-    soma->add_mechanism("hh");
-
-    std::vector<std::vector<unsigned>> levels;
-    levels.push_back({0});
-
-    // Standard mersenne_twister_engine seeded with gid.
-    std::mt19937 gen(gid);
-    std::uniform_real_distribution<double> dis(0, 1);
-
-    double dend_radius = 0.5; // Diameter of 1 μm for each cable.
-
-    unsigned nsec = 1;
-    for (unsigned i=0; i<params.max_depth; ++i) {
-        // Branch prob at this level.
-        double bp = interp(params.branch_probs, i, params.max_depth);
-        // Length at this level.
-        double l = interp(params.lengths, i, params.max_depth);
-        // Number of compartments at this level.
-        unsigned nc = std::round(interp(params.compartments, i, params.max_depth));
-
-        std::vector<unsigned> sec_ids;
-        for (unsigned sec: levels[i]) {
-            for (unsigned j=0; j<2; ++j) {
-                if (dis(gen)<bp) {
-                    sec_ids.push_back(nsec++);
-                    auto dend = cell.add_cable(sec, arb::section_kind::dendrite, dend_radius, dend_radius, l);
-                    dend->set_compartments(nc);
-                    dend->add_mechanism("pas");
-                    dend->rL = 100;
-                }
-            }
-        }
-        if (sec_ids.empty()) {
-            break;
-        }
-        levels.push_back(sec_ids);
+    run_params params;
+    if (argc<2) {
+        std::cout << "Using default parameters.\n";
+        return params;
+    }
+    if (argc>2) {
+        throw std::runtime_error("More than command line one option not permitted.");
     }
 
-    // Add spike threshold detector at the soma.
-    cell.add_detector({0,0}, 10);
+    std::string fname = argv[1];
+    std::cout << "Loading parameters from file: " << fname << "\n";
+    std::ifstream f(fname);
 
-    // Add a synapse to the mid point of the first dendrite.
-    cell.add_synapse({1, 0.5}, "expsyn");
+    if (!f.good()) {
+        throw std::runtime_error("Unable to open input parameter file: "+fname);
+    }
 
-    return cell;
+    nlohmann::json json;
+    json << f;
+
+    param_from_json(params.name, "name", json);
+    param_from_json(params.dry_run, "dry-run", json);
+    param_from_json(params.num_cells_per_rank, "num-cells-per-rank", json);
+    param_from_json(params.num_ranks, "num-ranks", json);
+    param_from_json(params.duration, "duration", json);
+    param_from_json(params.min_delay, "min-delay", json);
+    params.cell = parse_cell_parameters(json);
+
+    if (!json.empty()) {
+        for (auto it=json.begin(); it!=json.end(); ++it) {
+            std::cout << "  Warning: unused input parameter: \"" << it.key() << "\"\n";
+        }
+        std::cout << "\n";
+    }
+
+    return params;
 }
-

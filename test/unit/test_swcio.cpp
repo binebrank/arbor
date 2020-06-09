@@ -8,7 +8,6 @@
 #include <vector>
 
 #include <arbor/cable_cell.hpp>
-#include <arbor/morphology.hpp>
 #include <arbor/swcio.hpp>
 
 #include "../gtest.h"
@@ -26,7 +25,7 @@ void expect_record_equals(const swc_record& expected,
                           const swc_record& actual)
 {
     EXPECT_EQ(expected.id, actual.id);
-    EXPECT_EQ(expected.type, actual.type);
+    EXPECT_EQ(expected.tag, actual.tag);
     EXPECT_FLOAT_EQ(expected.x, actual.x);
     EXPECT_FLOAT_EQ(expected.y, actual.y);
     EXPECT_FLOAT_EQ(expected.z, actual.z);
@@ -36,54 +35,44 @@ void expect_record_equals(const swc_record& expected,
 
 TEST(swc_record, construction)
 {
-    {
-        // force an invalid type
-        swc_record::kind invalid_type = static_cast<swc_record::kind>(100);
-        EXPECT_THROW(swc_record(invalid_type, 7, 1., 1., 1., 1., 5).assert_consistent(),
-                     swc_error);
-    }
+    int soma_tag = 1;
 
     {
         // invalid id
-        EXPECT_THROW(swc_record(
-                         swc_record::kind::custom, -3, 1., 1., 1., 1., 5).assert_consistent(),
+        EXPECT_THROW(swc_record(soma_tag, -3, 1., 1., 1., 1., 5).assert_consistent(),
                      swc_error);
     }
 
     {
         // invalid parent id
-        EXPECT_THROW(swc_record(
-                         swc_record::kind::custom, 0, 1., 1., 1., 1., -5).assert_consistent(),
+        EXPECT_THROW(swc_record(soma_tag, 0, 1., 1., 1., 1., -5).assert_consistent(),
                      swc_error);
     }
 
     {
         // invalid radius
-        EXPECT_THROW(swc_record(
-                         swc_record::kind::custom, 0, 1., 1., 1., -1., -1).assert_consistent(),
+        EXPECT_THROW(swc_record(soma_tag, 0, 1., 1., 1., -1., -1).assert_consistent(),
                      swc_error);
     }
 
     {
         // parent_id > id
-        EXPECT_THROW(swc_record(
-                         swc_record::kind::custom, 0, 1., 1., 1., 1., 2).assert_consistent(),
+        EXPECT_THROW(swc_record(soma_tag, 0, 1., 1., 1., 1., 2).assert_consistent(),
                      swc_error);
     }
 
     {
         // parent_id == id
-        EXPECT_THROW(swc_record(
-                         swc_record::kind::custom, 0, 1., 1., 1., 1., 0).assert_consistent(),
+        EXPECT_THROW(swc_record(soma_tag, 0, 1., 1., 1., 1., 0).assert_consistent(),
                      swc_error);
     }
 
     {
         // check standard construction by value
-        swc_record record(swc_record::kind::custom, 0, 1., 1., 1., 1., -1);
+        swc_record record(soma_tag, 0, 1., 1., 1., 1., -1);
         EXPECT_TRUE(record.is_consistent());
         EXPECT_EQ(record.id, 0);
-        EXPECT_EQ(record.type, swc_record::kind::custom);
+        EXPECT_EQ(record.tag, soma_tag);
         EXPECT_EQ(record.x, 1.);
         EXPECT_EQ(record.y, 1.);
         EXPECT_EQ(record.z, 1.);
@@ -94,7 +83,7 @@ TEST(swc_record, construction)
 
     {
         // check copy constructor
-        swc_record record_orig(swc_record::kind::custom, 0, 1., 1., 1., 1., -1);
+        swc_record record_orig(soma_tag, 0, 1., 1., 1., 1., -1);
         swc_record record(record_orig);
         expect_record_equals(record_orig, record);
     }
@@ -133,13 +122,6 @@ TEST(swc_parser, invalid_input_parse)
         // Check non-parsable values
         std::istringstream is(
             "1a 1 14.566132 34.873772 7.857000 0.717830 -1\n");
-        EXPECT_THROW(parse_swc_file(is), swc_error);
-    }
-
-    {
-        // Check invalid record type
-        std::istringstream is(
-            "1 10 14.566132 34.873772 7.857000 0.717830 -1\n");
         EXPECT_THROW(parse_swc_file(is), swc_error);
     }
 
@@ -210,8 +192,9 @@ TEST(swc_parser, valid_input)
         is >> record;
         EXPECT_TRUE(is);
 
+        int soma_tag = 1;
         swc_record record_expected(
-            swc_record::kind::soma,
+            soma_tag,
             0, 14.566132, 34.873772, 7.857000, 0.717830, -1);
         expect_record_equals(record_expected, record);
     }
@@ -227,8 +210,9 @@ TEST(swc_parser, valid_input)
         is >> record;
         EXPECT_TRUE(is);
 
+        int soma_tag = 1;
         swc_record record_expected(
-            swc_record::kind::soma,
+            soma_tag,
             0, 14.566132, 34.873772, 7.857000, 0.717830, -1);
         expect_record_equals(record_expected, record);
     }
@@ -256,7 +240,7 @@ TEST(swc_parser, valid_input)
         EXPECT_FALSE(is.fail());
         EXPECT_FALSE(is.bad());
         EXPECT_EQ(0, record.id);    // zero-based indexing
-        EXPECT_EQ(swc_record::kind::soma, record.type);
+        EXPECT_EQ(1, record.tag);
         EXPECT_FLOAT_EQ(14.566132, record.x);
         EXPECT_FLOAT_EQ(34.873772, record.y);
         EXPECT_FLOAT_EQ( 7.857000, record.z);
@@ -265,11 +249,12 @@ TEST(swc_parser, valid_input)
     }
 
     {
+
         // check valid input with a series of records
         std::vector<swc_record> records_orig = {
-            swc_record(swc_record::kind::soma, 0,
+            swc_record(1, 0,
                         14.566132, 34.873772, 7.857000, 0.717830, -1),
-            swc_record(swc_record::kind::dendrite, 1,
+            swc_record(3, 1,
                         14.566132+1, 34.873772+1, 7.857000+1, 0.717830+1, -1)
         };
 
@@ -294,6 +279,8 @@ TEST(swc_parser, valid_input)
     }
 }
 
+// hipcc bug in reading DATADIR
+#ifndef ARB_HIP
 TEST(swc_parser, from_allen_db)
 {
     std::string datadir{DATADIR};
@@ -310,6 +297,7 @@ TEST(swc_parser, from_allen_db)
     // verify that the correct number of nodes was read
     EXPECT_EQ(1058u, nodes.size());
 }
+#endif
 
 TEST(swc_parser, input_cleaning)
 {
@@ -399,7 +387,7 @@ TEST(swc_parser, raw)
         std::stringstream is;
         is << "1 1 14.566132 34.873772 7.857000 0.717830 -1\n";
         is << "2 2 14.566132 34.873772 7.857000 0.717830 1\n";
-        is << "3 10 14.566132 34.873772 7.857000 0.717830 1\n";
+        is << "-3 2 14.566132 34.873772 7.857000 0.717830 1\n"; // invalid sample identifier -3
         is << "4 2 14.566132 34.873772 7.857000 0.717830 1\n";
 
         try {
@@ -421,139 +409,3 @@ TEST(swc_parser, raw)
     }
 }
 
-TEST(swc_io, cell_construction) {
-    using namespace arb;
-
-    //
-    //    0
-    //    |
-    //    1
-    //    |
-    //    2
-    //   / \.
-    //  3   4
-    //       \.
-    //        5
-    //
-
-    std::stringstream is;
-    is << "1 1 0 0 0 2.1 -1\n";
-    is << "2 3 0.1 1.2 1.2 1.3 1\n";
-    is << "3 3 1.0 2.0 2.2 1.1 2\n";
-    is << "4 3 1.5 3.3 1.3 2.2 3\n";
-    is << "5 3 2.5 5.3 2.5 0.7 3\n";
-    is << "6 3 3.5 2.3 3.7 3.4 5\n";
-
-    using point_type = point<double>;
-    std::vector<point_type> points = {
-        { 0.0, 0.0, 0.0 },
-        { 0.1, 1.2, 1.2 },
-        { 1.0, 2.0, 2.2 },
-        { 1.5, 3.3, 1.3 },
-        { 2.5, 5.3, 2.5 },
-        { 3.5, 2.3, 3.7 },
-    };
-
-    // swc -> morphology
-    auto morph = swc_as_morphology(parse_swc_file(is));
-
-    cable_cell cell = make_cable_cell(morph, true);
-    EXPECT_TRUE(cell.has_soma());
-    EXPECT_EQ(4u, cell.num_segments());
-
-    EXPECT_DOUBLE_EQ(norm(points[1]-points[2]), cell.cable(1)->length());
-    EXPECT_DOUBLE_EQ(norm(points[2]-points[3]), cell.cable(2)->length());
-    EXPECT_DOUBLE_EQ(norm(points[2]-points[4]) + norm(points[4]-points[5]),
-              cell.cable(3)->length());
-
-
-    // Check each segment separately
-    EXPECT_TRUE(cell.segment(0)->is_soma());
-    EXPECT_EQ(2.1, cell.soma()->radius());
-    EXPECT_EQ(point_type(0, 0, 0), cell.soma()->center());
-
-    for (auto i = 1u; i < cell.num_segments(); ++i) {
-        EXPECT_TRUE(cell.segment(i)->is_dendrite());
-    }
-
-    EXPECT_EQ(1u, cell.cable(1)->num_sub_segments());
-    EXPECT_EQ(1u, cell.cable(2)->num_sub_segments());
-    EXPECT_EQ(2u, cell.cable(3)->num_sub_segments());
-
-    // We asked to use the same discretization as in the SWC, so check number of compartments too.
-    EXPECT_EQ(1u, cell.cable(1)->num_compartments());
-    EXPECT_EQ(1u, cell.cable(2)->num_compartments());
-    EXPECT_EQ(2u, cell.cable(3)->num_compartments());
-
-    // Check the radii
-    EXPECT_EQ(1.3, cell.cable(1)->radius(0));
-    EXPECT_EQ(1.1, cell.cable(1)->radius(1));
-
-    EXPECT_EQ(1.1, cell.cable(2)->radius(0));
-    EXPECT_EQ(2.2, cell.cable(2)->radius(1));
-
-    EXPECT_EQ(1.1, cell.cable(3)->radius(0));
-    EXPECT_EQ(3.4, cell.cable(3)->radius(1));
-
-    auto len_ratio = norm(points[2]-points[4]) / cell.cable(3)->length();
-    EXPECT_NEAR(.7, cell.cable(3)->radius(len_ratio), 1e-15);
-
-    // Double-check radii at joins are equal
-    EXPECT_EQ(cell.cable(1)->radius(1),
-              cell.cable(2)->radius(0));
-
-    EXPECT_EQ(cell.cable(1)->radius(1),
-              cell.cable(3)->radius(0));
-}
-
-void expect_morph_eq(const morphology& a, const morphology& b) {
-    EXPECT_EQ(a.soma.r, b.soma.r);
-    EXPECT_EQ(a.sections.size(), b.sections.size());
-
-    for (unsigned i = 0; i<a.sections.size(); ++i) {
-        const section_geometry& r = a.sections[i];
-        const section_geometry& s = b.sections[i];
-
-        EXPECT_EQ(r.points.size(), s.points.size());
-        unsigned n = r.points.size();
-        if (n>1) {
-            auto r0 = r.points[0];
-            auto s0 = s.points[0];
-            EXPECT_EQ(r0.r, s0.r);
-
-            // TODO: check lengths for each line segment instead.
-            EXPECT_DOUBLE_EQ(r.length, s.length);
-
-            for (unsigned i = 1; i<n; ++i) {
-                auto r1 = r.points[i];
-                auto s1 = s.points[i];
-
-                EXPECT_EQ(r1.r, s1.r);
-            }
-        }
-    }
-}
-
-// check that simple ball and stick model with one dendrite attached to a soma
-// which is used in the validation tests can be loaded from file and matches
-// the one generated with the C++ interface
-TEST(swc_parser, from_file_ball_and_stick) {
-    std::string datadir{DATADIR};
-    auto fname = datadir + "/ball_and_stick.swc";
-    std::ifstream fid(fname);
-    if (!fid.is_open()) {
-        std::cerr << "unable to open file " << fname << "... skipping test\n";
-        return;
-    }
-
-    // read the file as morhpology
-    auto bas_morph = swc_as_morphology(parse_swc_file(fid));
-
-    // compare with expected morphology
-    morphology expected;
-
-    expected.soma = {0., 0., 0.,  6.30785};
-    expected.add_section({{6.30785, 0., 0., 0.5}, {206.30785, 0., 0., 0.5}}, 0u, section_kind::dendrite);
-
-    expect_morph_eq(expected, bas_morph);
-}

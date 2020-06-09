@@ -10,7 +10,6 @@
 
 #include "backends/threshold_crossing.hpp"
 #include "backends/gpu/gpu_store_types.hpp"
-#include "backends/gpu/managed_ptr.hpp"
 #include "backends/gpu/stack.hpp"
 
 #include "stack.hpp"
@@ -37,7 +36,7 @@ class threshold_watcher {
 public:
     using stack_type = stack<threshold_crossing>;
 
-    threshold_watcher() = default;
+    threshold_watcher() = delete;
     threshold_watcher(threshold_watcher&& other) = default;
     threshold_watcher& operator=(threshold_watcher&& other) = default;
 
@@ -70,7 +69,7 @@ public:
 
     /// Remove all stored crossings that were detected in previous calls to test()
     void clear_crossings() {
-        stack_.host_access();
+        stack_.update_host();
         stack_.clear();
     }
 
@@ -90,7 +89,7 @@ public:
     }
 
     const std::vector<threshold_crossing>& crossings() const {
-        stack_.host_access();
+        stack_.update_host();
 
         if (stack_.overflow()) {
             throw arbor_internal_error("gpu/threshold_watcher: gpu spike buffer overflow");
@@ -115,9 +114,7 @@ public:
                 cv_index_.data(), values_, thresholds_.data());
 
             // Check that the number of spikes has not exceeded capacity.
-            // ATTENTION: requires cudaDeviceSynchronize to avoid simultaneous
-            // host-device managed memory access.
-            arb_assert((cudaDeviceSynchronize(), !stack_.overflow()));
+            arb_assert(!stack_.overflow());
         }
     }
 
@@ -141,7 +138,7 @@ private:
     array v_prev_;              // Values at previous sample time.
 
     // Hybrid host/gpu data structure for accumulating threshold crossings.
-    stack_type stack_;
+    mutable stack_type stack_;
 
     // host side storage for the crossings
     mutable std::vector<threshold_crossing> crossings_;

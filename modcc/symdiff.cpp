@@ -328,8 +328,11 @@ public:
         auto cond_expr = result();
         e->true_branch()->accept(this);
         auto true_expr = result();
-        e->false_branch()->accept(this);
-        auto false_expr = result();
+        expression_ptr false_expr;
+        if (e->false_branch()) {
+            e->false_branch()->accept(this);
+            false_expr = result()->clone();
+        }
 
         if (!is_number(cond_expr)) {
             result_ = make_expression<IfExpression>(loc,
@@ -426,6 +429,9 @@ public:
         }
         else if (expr_value(rhs)==1) {
             result_ = e->lhs()->clone();
+        }
+        else if (is_number(rhs)) {
+            result_ = make_expression<MulBinaryExpression>(loc, std::move(lhs), make_expression<NumberExpression>(loc, 1.0/expr_value(rhs)));
         }
         else {
             result_ = make_expression<DivBinaryExpression>(loc, std::move(lhs), std::move(rhs));
@@ -526,7 +532,11 @@ public:
                 return;
             case tok::gte:
                 as_number(loc, lval>=rval);
-                return;
+            case tok::land:
+                as_number(loc, lval&&rval);
+            case tok::lor:
+                as_number(loc, lval||rval);
+                    return;
             default: ;
                 // unrecognized, fall through to non-numeric case below
             }

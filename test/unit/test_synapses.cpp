@@ -14,6 +14,7 @@
 #include "util/maputil.hpp"
 #include "util/range.hpp"
 
+#include "../common_cells.hpp"
 #include "common.hpp"
 #include "mech_private_field_access.hpp"
 
@@ -32,30 +33,28 @@ ACCESS_BIND(value_type* multicore::mechanism::*, vec_i_ptr, &multicore::mechanis
 TEST(synapses, add_to_cell) {
     using namespace arb;
 
-    cable_cell cell;
+    auto cell = make_cell_soma_only(false);
 
-    // Soma with diameter 12.6157 um and HH channel
-    auto soma = cell.add_soma(12.6157/2.0);
-    soma->add_mechanism("hh");
+    cell.place(mlocation{0, 0.1}, "expsyn");
+    cell.place(mlocation{0, 0.2}, "exp2syn");
+    cell.place(mlocation{0, 0.3}, "expsyn");
 
-    cell.add_synapse({0, 0.1}, "expsyn");
-    cell.add_synapse({1, 0.2}, "exp2syn");
-    cell.add_synapse({0, 0.3}, "expsyn");
+    auto syns = cell.synapses();
 
-    EXPECT_EQ(3u, cell.synapses().size());
-    const auto& syns = cell.synapses();
+    ASSERT_EQ(2u, syns["expsyn"].size());
+    ASSERT_EQ(1u, syns["exp2syn"].size());
 
-    EXPECT_EQ(syns[0].location.segment, 0u);
-    EXPECT_EQ(syns[0].location.position, 0.1);
-    EXPECT_EQ(syns[0].mechanism.name(), "expsyn");
+    EXPECT_EQ((mlocation{0, 0.1}), syns["expsyn"][0].loc);
+    EXPECT_EQ("expsyn", syns["expsyn"][0].item.name());
 
-    EXPECT_EQ(syns[1].location.segment, 1u);
-    EXPECT_EQ(syns[1].location.position, 0.2);
-    EXPECT_EQ(syns[1].mechanism.name(), "exp2syn");
+    EXPECT_EQ((mlocation{0, 0.3}), syns["expsyn"][1].loc);
+    EXPECT_EQ("expsyn", syns["expsyn"][1].item.name());
 
-    EXPECT_EQ(syns[2].location.segment, 0u);
-    EXPECT_EQ(syns[2].location.position, 0.3);
-    EXPECT_EQ(syns[2].mechanism.name(), "expsyn");
+    EXPECT_EQ((mlocation{0, 0.2}), syns["exp2syn"][0].loc);
+    EXPECT_EQ("exp2syn", syns["exp2syn"][0].item.name());
+
+    // adding a synapse to an invalid branch location should throw.
+    EXPECT_THROW(cell.place(mlocation{1, 0.3}, "expsyn"), std::runtime_error);
 }
 
 template <typename Seq>
@@ -72,12 +71,14 @@ auto unique_cast(std::unique_ptr<B> p) {
 
 TEST(synapses, syn_basic_state) {
     using util::fill;
-    using value_type = multicore::backend::value_type;
-    using index_type = multicore::backend::index_type;
+    using value_type = fvm_value_type;
+    using index_type = fvm_index_type;
 
     int num_syn = 4;
     int num_comp = 4;
     int num_intdom = 1;
+
+    value_type temp_K = *neuron_parameter_defaults.temperature_K;
 
     auto expsyn = unique_cast<multicore::mechanism>(global_default_catalogue().instance<backend>("expsyn").mech);
     ASSERT_TRUE(expsyn);
@@ -87,9 +88,16 @@ TEST(synapses, syn_basic_state) {
 
     std::vector<fvm_gap_junction> gj = {};
     auto align = std::max(expsyn->data_alignment(), exp2syn->data_alignment());
-    shared_state state(num_intdom, std::vector<index_type>(num_comp, 0), gj, align);
 
-    state.reset(-65., constant::hh_squid_temp);
+    shared_state state(num_intdom,
+        std::vector<index_type>(num_comp, 0),
+        {},
+        std::vector<value_type>(num_comp, -65),
+        std::vector<value_type>(num_comp, temp_K),
+        std::vector<value_type>(num_comp, 1.),
+        align);
+
+    state.reset();
     fill(state.current_density, 1.0);
     fill(state.time_to, 0.1);
     state.set_dt();

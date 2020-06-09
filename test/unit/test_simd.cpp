@@ -186,10 +186,11 @@ TYPED_TEST_P(simd_value, copy_to_from_masked) {
     std::minstd_rand rng(1031);
 
     for (unsigned i = 0; i<nrounds; ++i) {
-        scalar buf1[N], buf2[N], buf3[N];
+        scalar buf1[N], buf2[N], buf3[N], buf4[N];
         fill_random(buf1, rng);
         fill_random(buf2, rng);
         fill_random(buf3, rng);
+        fill_random(buf4, rng);
 
         bool mbuf1[N], mbuf2[N];
         fill_random(mbuf1, rng);
@@ -212,6 +213,13 @@ TYPED_TEST_P(simd_value, copy_to_from_masked) {
 
         where(m2, s).copy_to(buf3);
         EXPECT_TRUE(testing::indexed_eq_n(N, expected, buf3));
+
+        for (unsigned i = 0; i<N; ++i) {
+            expected[i] = mbuf2[i]? buf1[i]: buf4[i];
+        }
+
+        where(m2, simd(buf1)).copy_to(buf4);
+        EXPECT_TRUE(testing::indexed_eq_n(N, expected, buf4));
     }
 }
 
@@ -582,10 +590,11 @@ typedef ::testing::Types<
     simd<int, 8, simd_abi::avx512>,
     simd<double, 8, simd_abi::avx512>,
 #endif
+
 #if defined(__ARM_FEATURE_SVE)
     simd<int, SVE_LENGTH, simd_abi::sve>,
     simd<double, SVE_LENGTH, simd_abi::sve>,
-#elif defined(__ARM_NEON__) || defined(__aarch64__)
+#elif defined(__ARM_NEON)
     simd<int, 2, simd_abi::neon>,
     simd<double, 2, simd_abi::neon>,
 #endif
@@ -668,7 +677,7 @@ TYPED_TEST_P(simd_fp_value, fp_maths) {
 
         fp exprelr_u[N];
         for (unsigned i = 0; i<N; ++i) {
-            exprelr_u[i] = u[i]+fp(1)==fp(1)? fp(1): u[i]/(std::exp(u[i])-fp(1));
+            exprelr_u[i] = u[i]+fp(1)==fp(1)? fp(1): u[i]/(std::expm1(u[i]));
         }
         exprelr(simd(u)).copy_to(r);
         EXPECT_TRUE(testing::seq_almost_eq<fp>(exprelr_u, r));
@@ -871,9 +880,13 @@ typedef ::testing::Types<
 #ifdef __AVX512F__
     simd<double, 8, simd_abi::avx512>,
 #endif
+<<<<<<< HEAD
 #if defined(__ARM_FEATURE_SVE)
     simd<double, SVE_LENGTH, simd_abi::sve>,
 #elif defined(__ARM_NEON__) || defined(__aarch64__)
+=======
+#if defined(__ARM_NEON)
+>>>>>>> upstream/master
     simd<double, 2, simd_abi::neon>,
 #endif
 
@@ -1034,6 +1047,14 @@ TYPED_TEST_P(simd_indirect, masked_scatter) {
         where(m, s).copy_to(indirect(array, simd_index(offset)));
 
         EXPECT_TRUE(::testing::indexed_eq_n(buflen, test, array));
+
+        for (unsigned j = 0; j<buflen; ++j) {
+            array[j] = test[j];
+        }
+
+        where(m, simd(values)).copy_to(indirect(array, simd_index(offset)));
+
+        EXPECT_TRUE(::testing::indexed_eq_n(buflen, test, array));
     }
 }
 
@@ -1192,6 +1213,7 @@ typedef ::testing::Types<
     simd_and_index<simd<int, 8, simd_abi::avx512>,
                    simd<int, 8, simd_abi::avx512>>,
 #endif
+<<<<<<< HEAD
 #if defined(__ARM_FEATURE_SVE)
     simd_and_index<simd<double, SVE_LENGTH, simd_abi::sve>,
                    simd<int, SVE_LENGTH, simd_abi::sve>>,
@@ -1199,6 +1221,9 @@ typedef ::testing::Types<
     simd_and_index<simd<int, SVE_LENGTH, simd_abi::sve>,
                    simd<int, SVE_LENGTH, simd_abi::sve>>,
 #elif defined(__ARM_NEON__) || defined(__aarch64__)
+=======
+#if defined(__ARM_NEON)
+>>>>>>> upstream/master
     simd_and_index<simd<double, 2, simd_abi::neon>,
                    simd<int, 2, simd_abi::neon>>,
 
@@ -1284,10 +1309,14 @@ typedef ::testing::Types<
     simd_pair<simd<double, 8, simd_abi::avx512>,
               simd<int, 8, simd_abi::avx512>>,
 #endif
+<<<<<<< HEAD
 #if defined(__ARM_FEATURE_SVE)
     simd_pair<simd<double, SVE_LENGTH, simd_abi::sve>,
               simd<int, SVE_LENGTH, simd_abi::sve>>,
 #elif defined(__ARM_NEON__) || defined(__aarch64__)
+=======
+#if defined(__ARM_NEON)
+>>>>>>> upstream/master
     simd_pair<simd<double, 2, simd_abi::neon>,
               simd<int, 2, simd_abi::neon>>,
 #endif

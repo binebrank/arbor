@@ -10,7 +10,6 @@
 #include <arbor/assert.hpp>
 #include <arbor/common_types.hpp>
 #include <arbor/fvm_types.hpp>
-#include <arbor/ion_info.hpp>
 #include <arbor/simd/simd.hpp>
 
 #include "backends/event.hpp"
@@ -21,6 +20,7 @@
 #include "multi_event_stream.hpp"
 #include "threshold_watcher.hpp"
 
+#include "fvm_layout.hpp"
 #include "multicore_common.hpp"
 
 namespace arb {
@@ -46,25 +46,22 @@ struct ion_state {
     array eX_;              // (mV) reversal potential
     array Xi_;              // (mM) internal concentration
     array Xo_;              // (mM) external concentration
-    array weight_Xi_;       // (1) concentration weight internal
-    array weight_Xo_;       // (1) concentration weight external
+
+    array init_Xi_;         // (mM) area-weighted initial internal concentration
+    array init_Xo_;         // (mM) area-weighted initial external concentration
+    array reset_Xi_;        // (mM) area-weighted user-set internal concentration
+    array reset_Xo_;        // (mM) area-weighted user-set internal concentration
+    array init_eX_;         // (mV) initial reversal potential
 
     array charge;           // charge of ionic species (global value, length 1)
-    fvm_value_type default_int_concentration; // (mM) default internal concentration
-    fvm_value_type default_ext_concentration; // (mM) default external concentration
 
     ion_state() = default;
 
     ion_state(
-        ion_info info,
-        const std::vector<fvm_index_type>& cv,
-        const std::vector<fvm_value_type>& iconc_norm_area,
-        const std::vector<fvm_value_type>& econc_norm_area,
+        int charge,
+        const fvm_ion_config& ion_data,
         unsigned align
     );
-
-    // Calculate the reversal potential eX (mV) using Nernst equation
-    void nernst(fvm_value_type temperature_K);
 
     // Set ion concentrations to weighted proportion of default concentrations.
     void init_concentration();
@@ -72,11 +69,9 @@ struct ion_state {
     // Set ionic current density to zero.
     void zero_current();
 
-    void reset(fvm_value_type temperature_K) {
-        zero_current();
-        init_concentration();
-        nernst(temperature_K);
-    }
+    // Zero currents, reset concentrations, and reset reversal potential from
+    // initial values.
+    void reset();
 };
 
 struct shared_state {
@@ -96,7 +91,10 @@ struct shared_state {
     array voltage;            // Maps CV index to membrane voltage [mV].
     array current_density;    // Maps CV index to membrane current density contributions [A/m²].
     array conductivity;       // Maps CV index to membrane conductivity [kS/m²].
-    fvm_value_type temperature_degC;  // Global temperature [°C].
+
+    array init_voltage;       // Maps CV index to initial membrane voltage [mV].
+    array temperature_degC;   // Maps CV to local temperature (read only) [°C].
+    array diam_um;            // Maps CV to local diameter (read only) [µm].
 
     std::unordered_map<std::string, ion_state> ion_data;
 
@@ -108,15 +106,16 @@ struct shared_state {
         fvm_size_type n_intdom,
         const std::vector<fvm_index_type>& cv_to_intdom_vec,
         const std::vector<fvm_gap_junction>& gj_vec,
+        const std::vector<fvm_value_type>& init_membrane_potential,
+        const std::vector<fvm_value_type>& temperature_K,
+        const std::vector<fvm_value_type>& diam,
         unsigned align
     );
 
     void add_ion(
         const std::string& ion_name,
-        ion_info info,
-        const std::vector<fvm_index_type>& cv,
-        const std::vector<fvm_value_type>& iconc_norm_area,
-        const std::vector<fvm_value_type>& econc_norm_area);
+        int charge,
+        const fvm_ion_config& ion_data);
 
     void zero_currents();
 
@@ -146,7 +145,7 @@ struct shared_state {
         array& sample_time,
         array& sample_value);
 
-    void reset(fvm_value_type initial_voltage, fvm_value_type temperature_K);
+    void reset();
 };
 
 // For debugging only:
