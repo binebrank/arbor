@@ -38,6 +38,19 @@ option(ARB_UNWIND "Use libunwind for stack trace printing if available" OFF)
 set(ARB_GPU "none" CACHE STRING "GPU backend and compiler configuration")
 set_property(CACHE PROPERTY STRINGS "none" "cuda" "cuda-clang" "hip")
 
+# Sve length
+set(SVE_VECTOR_LENGTH "256" CACHE STRING "vector length for arm sve, default 256 bits")
+set(SVE_POSSIBLE_VALUES "128" "256" "512" "1024" "2048")
+if(NOT SVE_VECTOR_LENGTH IN_LIST SVE_POSSIBLE_VALUES)
+    string (REPLACE ";" " " SVE_POSSIBLE_VALUES "${SVE_POSSIBLE_VALUES}")
+    message(FATAL_ERROR "Error: -DSVE_VECTOR_LENGTH must be one of ${SVE_POSSIBLE_VALUES}.")
+elseif(SVE_VECTOR_LENGTH IN_LIST SVE_POSSIBLE_VALUES)
+    add_definitions( -DSVE_SIZE=${SVE_VECTOR_LENGTH} )
+    set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -msve-vector-bits=${SVE_VECTOR_LENGTH}" )
+    math(EXPR SVE_VECTOR_LENGTH "${SVE_VECTOR_LENGTH} / 64")
+    add_definitions( -DSVE_LENGTH=${SVE_VECTOR_LENGTH} )
+endif()
+
 #----------------------------------------------------------
 # Configure-time features for Arbor:
 #----------------------------------------------------------
